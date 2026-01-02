@@ -1,0 +1,269 @@
+import open3d as o3d
+import numpy as np
+from scipy.spatial.transform import Rotation
+
+from nonrigid_icp_ed.graph import Graph
+
+
+def export_graph_as_lines(
+    graph: Graph,
+    filepath: str,
+) -> None:
+    """
+    Export the graph structure to an OBJ file for visualization.
+    Nodes are exported as vertices, and edges as lines.
+    """
+    with open(filepath, "w") as f:
+        # Write vertices
+        for v in graph.poss.cpu().numpy():
+            f.write(f"v {v[0]} {v[1]} {v[2]}\n")
+        # Write edges as lines
+        for edge in graph.edges.cpu().numpy():
+            # OBJ format uses 1-based indexing
+            f.write(f"l {edge[0] + 1} {edge[1] + 1}\n")
+
+
+# def export_graph_as_mesh(
+#     graph: Graph,
+#     filepath: str,
+#     radius_node: float = 0.01,
+#     radius_edge: float = 0.005,
+#     resolution: int = 10,
+# ) -> None:
+#     """
+#     Export the graph structure to a mesh file (e.g., PLY) for visualization.
+#     Nodes are represented as spheres, and edges as cylinders.
+#     """
+#     geometries = []
+#     # Create spheres for nodes
+#     for v in graph.poss.cpu().numpy():
+#         sphere = o3d.geometry.TriangleMesh.create_sphere(
+#             radius=radius_node, resolution=resolution
+#         )
+#         sphere.translate(v)
+#         sphere.paint_uniform_color([1.0, 0.0, 0.0])  # red color for nodes
+#         geometries.append(sphere)
+
+#     edge_weight = graph.weights.cpu().numpy()
+#     # Create cylinders for edges
+#     for edge, w in zip(graph.edges.cpu().numpy(), edge_weight):
+#         start = graph.poss[edge[0]].cpu().numpy()
+#         end = graph.poss[edge[1]].cpu().numpy()
+#         cylinder = o3d.geometry.TriangleMesh.create_cylinder(
+#             radius=radius_edge * w,
+#             height=np.linalg.norm(end - start),
+#             resolution=resolution,
+#         )
+#         direction = end - start
+#         z_axis = np.array([0, 0, 1])
+#         rotation_matrix = Rotation.from_rotvec(
+#             np.cross(z_axis, direction / np.linalg.norm(direction))
+#         ).as_matrix()
+#         cylinder.rotate(rotation_matrix, center=np.array([0, 0, 0]))
+#         cylinder.translate(start)
+#         cylinder.paint_uniform_color([0.0, 1.0, 0.0])  # green color for edges
+#         geometries.append(cylinder)
+
+#     # Combine all geometries and export
+#     combined_mesh = o3d.geometry.TriangleMesh()
+#     for geom in geometries:
+#         combined_mesh += geom
+#     o3d.io.write_triangle_mesh(filepath, combined_mesh)
+
+def _rotation_matrix_from_vec_a_to_b(a: np.ndarray, b: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    """Return R s.t. R @ a == b (both 3-vectors). Handles parallel / anti-parallel robustly."""
+    a = a / (np.linalg.norm(a) + eps)
+    b = b / (np.linalg.norm(b) + eps)
+    v = np.cross(a, b)
+    c = float(np.dot(a, b))
+    s = np.linalg.norm(v)
+    if s < eps:
+        # parallel or anti-parallel
+        if c > 0.0:
+            return np.eye(3, dtype=np.float64)
+        # 180°: rotate about any axis orthogonal to a
+        axis = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        if abs(a[0]) > 0.9:  # pick an axis not colinear
+            axis = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        axis = axis - a * np.dot(axis, a)
+        axis /= (np.linalg.norm(axis) + eps)
+        K = np.array([[0, -axis[2], axis[1]],
+                      [axis[2], 0, -axis[0]],
+                      [-axis[1], axis[0], 0]], dtype=np.float64)
+        # Rodrigues for theta=pi: R = I + 2 K^2
+        return np.eye(3) + 2.0 * (K @ K)
+    # general case: Rodrigues R = I + K + K^2 * ((1-c)/s^2)
+    k = v / s
+    K = np.array([[0, -k[2], k[1]],
+                  [k[2], 0, -k[0]],
+                  [-k[1], k[0], 0]], dtype=np.float64)
+    return np.eye(3) + K + K @ K * ((1.0 - c) / (s * s + eps))
+
+# def export_graph_as_mesh(
+#     graph,
+#     filepath: str,
+#     radius_node: float = 0.01,
+#     radius_edge: float = 0.005,
+#     resolution: int = 10,
+#     min_edge_radius: float = 1e-4,
+# ) -> None:
+#     """
+#     Export graph as a mesh: nodes = spheres, edges = cylinders.
+#     - Cylinders are aligned from node i to j, centered at the segment midpoint.
+#     - Edge radius scales with weight but is clamped by `min_edge_radius`.
+#     """
+#     assert graph.poss.ndim == 2 and graph.poss.shape[1] == 3
+#     V = graph.poss.shape[0]
+#     E = graph.edges.shape[0]
+
+#     geometries = []
+
+#     # Nodes: spheres at positions
+#     poss_np = graph.poss.detach().cpu().numpy()
+#     for v in poss_np:
+#         sphere = o3d.geometry.TriangleMesh.create_sphere(radius=radius_node, resolution=resolution)
+#         sphere.translate(v.astype(np.float64))
+#         sphere.paint_uniform_color([1.0, 0.0, 0.0])  # red
+#         geometries.append(sphere)
+
+#     # Edges: cylinders along segments
+#     edges_np = graph.edges.detach().cpu().numpy().reshape(-1, 2)
+#     if graph.weights is not None and graph.weights.numel() == E:
+#         w_np = graph.weights.detach().cpu().numpy()
+#     else:
+#         w_np = np.ones((E,), dtype=np.float64)
+
+#     z_axis = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+
+#     for (e_idx, (i, j)) in enumerate(edges_np):
+#         start = poss_np[i].astype(np.float64)
+#         end   = poss_np[j].astype(np.float64)
+#         seg   = end - start
+#         h     = float(np.linalg.norm(seg))
+#         if h <= 1e-12:
+#             continue  # skip degenerate edge
+
+#         # radius scaled by weight with clamp
+#         r = max(min_edge_radius, float(radius_edge) * float(w_np[e_idx]))
+
+#         cyl = o3d.geometry.TriangleMesh.create_cylinder(radius=r, height=h, resolution=resolution)
+#         # align z-axis to segment direction
+#         R = _rotation_matrix_from_vec_a_to_b(z_axis, seg)
+#         cyl.rotate(R, center=np.array([0.0, 0.0, 0.0]))
+#         # translate to midpoint because cylinder is centered at origin
+#         mid = (start + end) * 0.5
+#         cyl.translate(mid)
+#         cyl.paint_uniform_color([0.0, 1.0, 0.0])  # green
+#         geometries.append(cyl)
+
+#     # Merge and save
+#     if not geometries:
+#         # Nothing to write
+#         return
+#     combined = o3d.geometry.TriangleMesh()
+#     for g in geometries:
+#         combined += g
+#     combined.compute_vertex_normals()
+#     o3d.io.write_triangle_mesh(filepath, combined)
+
+
+def _skew(v: np.ndarray) -> np.ndarray:
+    x, y, z = v
+    return np.array([[    0, -z,  y],
+                     [   z,  0, -x],
+                     [  -y,  x,  0]], dtype=np.float64)
+
+def _R_from_a_to_b(a: np.ndarray, b: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    """
+    Return rotation matrix R such that R @ a == b (both 3D).
+    Uses correct Rodrigues formula with sinθ and (1 - cosθ).
+    Handles parallel and anti-parallel cases robustly.
+    """
+    a = a.astype(np.float64); b = b.astype(np.float64)
+    a = a / (np.linalg.norm(a) + eps)
+    b = b / (np.linalg.norm(b) + eps)
+
+    v = np.cross(a, b)
+    c = float(np.dot(a, b))        # cosθ
+    s = np.linalg.norm(v)          # ‖v‖ = sinθ
+
+    if s < eps:
+        # parallel or anti-parallel
+        if c > 0.0:
+            return np.eye(3, dtype=np.float64)           # θ ≈ 0
+        # θ ≈ π: rotate about any axis orthogonal to a
+        u = np.array([1.0, 0.0, 0.0])
+        if abs(a[0]) > 0.9:
+            u = np.array([0.0, 1.0, 0.0])
+        u = u - a * np.dot(u, a)
+        u = u / (np.linalg.norm(u) + eps)
+        K = _skew(u)
+        # Rodrigues with θ=π → sinθ=0, 1-cosθ=2 → R = I + 0*K + 2*K^2
+        return np.eye(3) + 2.0 * (K @ K)
+
+    # general case
+    k = v / s
+    K = _skew(k)
+    # R = I + K*sinθ + K^2*(1 - cosθ)  with sinθ = s, cosθ = c
+    return np.eye(3) + K * s + (K @ K) * (1.0 - c)
+
+def export_graph_as_mesh(
+    graph,
+    filepath: str,
+    radius_node: float = 0.01,
+    radius_edge: float = 0.005,
+    resolution: int = 10,
+    min_edge_radius: float = 1e-4,
+) -> None:
+    """
+    Export graph as a mesh: nodes = spheres, edges = cylinders.
+    Cylinders are aligned to edge direction and centered at the segment midpoint.
+    """
+    assert graph.poss.ndim == 2 and graph.poss.shape[1] == 3
+    poss_np = graph.poss.detach().cpu().numpy().astype(np.float64)
+    edges_np = graph.edges.detach().cpu().numpy().reshape(-1, 2)
+    w_np = (graph.weights.detach().cpu().numpy().astype(np.float64)
+            if getattr(graph, "weights", None) is not None and graph.weights.numel() == edges_np.shape[0]
+            else np.ones((edges_np.shape[0],), dtype=np.float64))
+
+    geoms = []
+
+    # spheres (nodes)
+    for v in poss_np:
+        sph = o3d.geometry.TriangleMesh.create_sphere(radius=radius_node, resolution=resolution)
+        sph.translate(v)
+        sph.paint_uniform_color([1.0, 0.0, 0.0])
+        geoms.append(sph)
+
+    # cylinders (edges)
+    z_axis = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    for e_idx, (i, j) in enumerate(edges_np):
+        start = poss_np[i]; end = poss_np[j]
+        seg = end - start
+        h = float(np.linalg.norm(seg))
+        if h <= 1e-12:
+            continue  # skip degenerate
+
+        r = max(min_edge_radius, float(radius_edge) * float(abs(w_np[e_idx])))
+
+        cyl = o3d.geometry.TriangleMesh.create_cylinder(radius=r, height=h, resolution=resolution)
+
+        # align +Z to segment direction
+        R = _R_from_a_to_b(z_axis, seg)
+        cyl.rotate(R, center=np.array([0.0, 0.0, 0.0]))
+
+        # translate to segment midpoint (Open3D cylinder is centered at origin)
+        mid = (start + end) * 0.5
+        cyl.translate(mid)
+
+        cyl.paint_uniform_color([0.0, 1.0, 0.0])
+        geoms.append(cyl)
+
+    if not geoms:
+        return
+
+    mesh = o3d.geometry.TriangleMesh()
+    for g in geoms:
+        mesh += g
+    mesh.compute_vertex_normals()
+    o3d.io.write_triangle_mesh(filepath, mesh)
