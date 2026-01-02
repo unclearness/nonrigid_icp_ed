@@ -1,6 +1,7 @@
 from typing import Literal
 
 import torch
+import torch.nn.functional as F
 
 from nonrigid_icp_ed.warp import warp_embedded_deformation
 
@@ -176,3 +177,142 @@ def compute_truncated_chamfer_distance(
 
     # Final Chamfer distance = mean(src→tgt) + mean(tgt→src)
     return loss_s + loss_t
+
+
+def compute_unique_edges(F: torch.Tensor) -> torch.Tensor:
+    # --- build unique edges ---
+    e01 = F[:, [0, 1]]
+    e12 = F[:, [1, 2]]
+    e20 = F[:, [2, 0]]
+    edges = torch.cat([e01, e12, e20], dim=0)      # (3F,2)
+    edges = torch.sort(edges, dim=1).values
+    edges = torch.unique(edges, dim=0)             # (E,2)
+    return edges
+
+
+def compute_edge_length_uniform_loss(
+    V: torch.Tensor,          # (N,3), requires_grad=True
+    *,
+    F: torch.Tensor | None = None,          # (F,3), torch.long
+    edges : torch.Tensor | None = None,  # (E,2), torch.long
+    target_length: float | None = None,
+    target_mode: str = "mean",   # "median" or "mean"
+) -> torch.Tensor:
+    """
+    Edge length uniformization loss.
+
+    Returns:
+        scalar torch.Tensor
+    """
+    assert V.ndim == 2 and V.shape[1] == 3
+    if F is not None:
+        assert F.ndim == 2 and F.shape[1] == 3
+        assert F.dtype == torch.long
+    assert (edges is None) != (F is None), "Either edges or F must be provided, but not both."
+
+    if edges is None and F is not None:
+        edges = compute_unique_edges(F)
+
+    assert edges is not None
+    assert edges.ndim == 2 and edges.shape[1] == 2
+    assert edges.dtype == torch.long
+    vi = V[edges[:, 0]]
+    vj = V[edges[:, 1]]
+
+    # edge lengths
+    lengths = torch.norm(vi - vj, dim=1)            # (E,)
+
+    # --- target length ---
+    if target_length is None:
+        if target_mode == "median":
+            L = lengths.detach().median()
+        elif target_mode == "mean":
+            L = lengths.detach().mean()
+        else:
+            raise ValueError("target_mode must be 'median' or 'mean'")
+    else:
+        L = torch.tensor(
+            target_length,
+            device=V.device,
+            dtype=V.dtype,
+        )
+
+    # squared deviation
+    loss = ((lengths - L) ** 2).mean()
+
+    return loss
+
+
+@torch.no_grad()
+def build_adjacent_face_pairs(F: torch.Tensor) -> torch.Tensor:
+    """
+    F: (T,3) long
+    Returns:
+        adj: (A,2) long, each row is (face_id0, face_id1) sharing an edge
+        (boundary edges are ignored)
+    """
+    assert F.dtype == torch.long and F.ndim == 2 and F.shape[1] == 3
+    T = F.shape[0]
+
+    # collect undirected edges -> face id
+    # key = (min(u,v), max(u,v))
+    edge2faces = {}
+    F_cpu = F.detach().cpu()
+
+    for fid in range(T):
+        a, b, c = F_cpu[fid].tolist()
+        edges = [(a, b), (b, c), (c, a)]
+        for u, v in edges:
+            if u > v:
+                u, v = v, u
+            key = (u, v)
+            if key not in edge2faces:
+                edge2faces[key] = [fid]
+            else:
+                edge2faces[key].append(fid)
+
+    pairs = []
+    for faces in edge2faces.values():
+        if len(faces) == 2:      # internal edge
+            pairs.append((faces[0], faces[1]))
+        # non-manifold (>2) は必要ならここで全部組み合わせる等、用途に応じて
+
+    if len(pairs) == 0:
+        return torch.empty((0, 2), dtype=torch.long, device=F.device)
+
+    return torch.tensor(pairs, dtype=torch.long, device=F.device)
+
+
+def compute_adjacent_normal_consistency_loss(
+    V: torch.Tensor,                 # (N,3) requires_grad=True
+    F_tri: torch.Tensor,             # (T,3) long
+    adj_faces: torch.Tensor,         # (A,2) long (from build_adjacent_face_pairs)
+    *,
+    cos_margin: float = 0.0,         # 0 => forbid >90deg flips, 0.2=>stricter
+    beta: float = 50.0,              # softplus hardness
+    eps: float = 1e-12,
+) -> torch.Tensor:
+    """
+    Encourage adjacent face normals to have non-negative dot product:
+        dot(n0, n1) >= cos_margin
+    This prevents local fold-over / "inside-out" between neighboring triangles.
+
+    Returns scalar loss.
+    """
+    if adj_faces.numel() == 0:
+        return V.new_zeros(())
+
+    i0, i1, i2 = F_tri[:, 0], F_tri[:, 1], F_tri[:, 2]
+    v0, v1, v2 = V[i0], V[i1], V[i2]
+
+    # face normals (area-weighted)
+    n = torch.cross(v1 - v0, v2 - v0, dim=1)  # (T,3)
+    n = n / torch.norm(n, dim=1, keepdim=True).clamp_min(eps)  # unit normals
+
+    f0 = adj_faces[:, 0]
+    f1 = adj_faces[:, 1]
+    dot = (n[f0] * n[f1]).sum(dim=1)  # (A,)
+
+    # barrier: penalize if dot < cos_margin
+    loss = F.softplus((cos_margin - dot) * beta).mean() / beta
+    return loss

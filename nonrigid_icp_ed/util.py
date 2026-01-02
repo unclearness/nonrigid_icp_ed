@@ -1,3 +1,7 @@
+import os
+import random
+
+import open3d as o3d
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -132,3 +136,34 @@ def umeyama(src, dst, estimate_scale):
     T[:dim, dim] = t
 
     return T, R, t, s
+
+
+def set_random_seed(seed: int = 42) -> None:
+    # --- Python ---
+    random.seed(seed)
+
+    # --- Python Hash ---
+    os.environ["PYTHONHASHSEED"] = str(seed)
+
+    # --- NumPy and Scipy ---
+    np.random.seed(seed)
+
+    # --- Open3D ---
+    o3d.utility.random.seed(seed)
+
+    # --- PyTorch ---
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    # --- CuDNN ---
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    # --- CuBLAS ---
+    # https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
+    # --- PyTorch 2.0+ (optional) ---
+    if hasattr(torch, "use_deterministic_algorithms"):
+        torch.use_deterministic_algorithms(True, warn_only=True)

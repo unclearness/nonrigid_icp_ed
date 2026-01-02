@@ -12,40 +12,9 @@ from nonrigid_icp_ed.io import (
     export_graph_as_mesh,
     import_wrap3_json,
 )
-from nonrigid_icp_ed.util import umeyama
+from nonrigid_icp_ed.util import umeyama, set_random_seed
 from nonrigid_icp_ed.registration import NonRigidICP, OptimizationHistory
-from nonrigid_icp_ed.config import NonrigidICPEDConfig
-
-
-def set_random_seed(seed: int = 42) -> None:
-    # --- Python ---
-    random.seed(seed)
-
-    # --- Python Hash ---
-    os.environ["PYTHONHASHSEED"] = str(seed)
-
-    # --- NumPy and Scipy ---
-    np.random.seed(seed)
-
-    # --- Open3D ---
-    o3d.utility.random.seed(seed)
-
-    # --- PyTorch ---
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-    # --- CuDNN ---
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-    # --- CuBLAS ---
-    # https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
-    # --- PyTorch 2.0+ (optional) ---
-    if hasattr(torch, "use_deterministic_algorithms"):
-        torch.use_deterministic_algorithms(True, warn_only=True)
+from nonrigid_icp_ed.config import NonrigidIcpEdConfig
 
 
 def extract_vertex_ids_from_tri_landmarks(
@@ -65,11 +34,10 @@ def extract_vertex_ids_from_tri_landmarks(
 def main():
     set_random_seed()
 
-    print("Hello from nonrigid-icp!")
     graph = Graph()
 
     input_dir = Path(__file__).parent / "data" / "face"
-    output_dir = Path("./output")
+    output_dir = Path(__file__).parent / "output" / "face"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     mediapipe_tri_landmarks = import_wrap3_json(
@@ -112,7 +80,9 @@ def main():
         str(output_dir / "aligned_mediapipe_face.obj"), aligned_mediapipe_mesh
     )
 
-    config = NonrigidICPEDConfig()
+    config = NonrigidIcpEdConfig()
+    config = config.load_yaml("./config/demo_face.yaml")
+    print(config)
     node_num = 50
     rand_indices = np.random.choice(
         len(aligned_mediapipe_points), size=node_num, replace=False
@@ -137,7 +107,6 @@ def main():
 
     # Set truncation threshold based on the bounding box diagonal length
     config.minimization_conf.trunc_th = aligned_src_length * 0.05
-    config.write_history_dir = str(output_dir / "optimization_histories")
 
     src_pcd = torch.from_numpy(aligned_mediapipe_points).float()
     tgt_pcd = torch.from_numpy(lpshead_points).float()

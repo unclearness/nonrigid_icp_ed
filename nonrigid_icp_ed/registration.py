@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+import math
 
 import torch
 import loguru
@@ -11,9 +12,13 @@ from nonrigid_icp_ed.loss import (
     compute_truncated_chamfer_distance,
     compute_arap_loss,
     compute_landmark_loss,
+    compute_unique_edges,
+    compute_edge_length_uniform_loss,
+    build_adjacent_face_pairs,
+    compute_adjacent_normal_consistency_loss,
 )
 from nonrigid_icp_ed.knn import find_nearest_neighbors_faiss
-from nonrigid_icp_ed.config import NonrigidICPEDConfig
+from nonrigid_icp_ed.config import NonrigidIcpEdConfig
 
 
 def optimize_embeded_deformation_with_correspondences(
@@ -33,12 +38,15 @@ def optimize_embeded_deformation_with_correspondences(
     w_chamfer: float,
     w_landmark: float,
     w_arap: float,
+    w_edge_length_uniform: float,
+    w_normal_consistency: float,
     trunc_th: float,
     device: torch.device,
     eps: float = 1e-7,
     init_ts: torch.Tensor | None = None,
     init_Rs: torch.Tensor | None = None,
     fix_anchors: bool = False,
+    src_triangles: torch.Tensor | None = None,
     report_interval: int = 10,
 ):
 
@@ -63,9 +71,27 @@ def optimize_embeded_deformation_with_correspondences(
 
     anchor_poss = graph_nodes.detach().clone()
 
-    if src_landmark_idxs is None or tgt_landmark_idxs is None:
+    if (src_landmark_idxs is None or tgt_landmark_idxs is None) and w_landmark > 0:
         w_landmark = 0.0
         loguru.logger.warning("No landmarks provided, setting landmark weight to 0.")
+
+    src_edges = None
+    if src_triangles is None and w_edge_length_uniform > 0:
+        w_edge_length_uniform = 0
+        loguru.logger.warning(
+            "No source triangles provided, setting edge length uniform weight to 0."
+        )
+    elif src_triangles is not None and w_edge_length_uniform > 0:
+        src_edges = compute_unique_edges(src_triangles)
+
+    adj = None
+    if src_triangles is None and w_normal_consistency > 0:
+        w_normal_consistency = 0
+        loguru.logger.warning(
+            "No source triangles provided, setting normal consistency weight to 0."
+        )
+    elif src_triangles is not None and w_normal_consistency > 0:
+        adj = build_adjacent_face_pairs(src_triangles)
 
     warped_src_pcd = src_pcd
     for i in range(max_iters):
@@ -108,6 +134,24 @@ def optimize_embeded_deformation_with_correspondences(
         else:
             landmark_loss = 0
 
+        if w_edge_length_uniform > 0 and src_edges is not None:
+            edge_length_uniform_loss = compute_edge_length_uniform_loss(
+                warped_src_pcd, edges=src_edges
+            )
+        else:
+            edge_length_uniform_loss = 0
+
+        if w_normal_consistency > 0 and adj is not None and src_triangles is not None:
+            cos_margin = math.cos(math.radians(60.0))
+            normal_consistency_loss = compute_adjacent_normal_consistency_loss(
+                warped_src_pcd,
+                src_triangles,
+                adj,
+                cos_margin=cos_margin,
+            )
+        else:
+            normal_consistency_loss = 0
+
         chamfer_distance = compute_truncated_chamfer_distance(
             warped_src_pcd,
             tgt_pcd,
@@ -122,6 +166,8 @@ def optimize_embeded_deformation_with_correspondences(
             arap_loss * w_arap
             + landmark_loss * w_landmark
             + chamfer_distance * w_chamfer
+            + edge_length_uniform_loss * w_edge_length_uniform
+            + normal_consistency_loss * w_normal_consistency
         )
 
         if i == 0 or (i + 1) % report_interval == 0 or i == max_iters - 1:
@@ -129,7 +175,9 @@ def optimize_embeded_deformation_with_correspondences(
                 f"Iter {i+1}/{max_iters}: Total Loss={loss.item():.6f}, "
                 f"Chamfer={chamfer_distance.item():.6f}, "
                 f"Landmark={landmark_loss.item() if w_landmark > 0 else 0:.6f}, "
-                f"ARAP={arap_loss.item() if w_arap > 0 else 0:.6f}"
+                f"ARAP={arap_loss.item() if w_arap > 0 else 0:.6f}, "
+                f"EdgeLengthUniform={edge_length_uniform_loss.item() if w_edge_length_uniform > 0 else 0:.6f}, "
+                f"NormalConsistency={normal_consistency_loss.item() if w_normal_consistency > 0 else 0:.6f}"
             )
 
         if loss.item() < eps or max_iters - 1 <= i:
@@ -181,11 +229,12 @@ class NonRigidICP:
         src_pcd: torch.Tensor,
         tgt_pcd: torch.Tensor,
         graph: Graph,
-        config: NonrigidICPEDConfig,
+        config: NonrigidIcpEdConfig,
         src_node_weights: torch.Tensor,
         src_node_indices: torch.Tensor,
         src_landmark_idxs: torch.Tensor | None = None,
         tgt_landmark_idxs: torch.Tensor | None = None,
+        src_triangles: torch.Tensor | None = None,
     ):
         self.initialize(
             src_pcd,
@@ -196,6 +245,7 @@ class NonRigidICP:
             src_node_indices,
             src_landmark_idxs,
             tgt_landmark_idxs,
+            src_triangles,
         )
 
     def initialize(
@@ -203,11 +253,12 @@ class NonRigidICP:
         src_pcd: torch.Tensor,
         tgt_pcd: torch.Tensor,
         graph: Graph,
-        config: NonrigidICPEDConfig,
+        config: NonrigidIcpEdConfig,
         src_node_weights: torch.Tensor,
         src_node_indices: torch.Tensor,
         src_landmark_idxs: torch.Tensor | None = None,
         tgt_landmark_idxs: torch.Tensor | None = None,
+        src_triangles: torch.Tensor | None = None,
     ):
         self.src_pcd = src_pcd
         self.tgt_pcd = tgt_pcd
@@ -217,6 +268,7 @@ class NonRigidICP:
         self.src_node_indices = src_node_indices
         self.src_landmark_idxs = src_landmark_idxs
         self.tgt_landmark_idxs = tgt_landmark_idxs
+        self.src_triangles = src_triangles
         self.optimization_histories = []
 
     def to(self, device: torch.device):
@@ -231,6 +283,8 @@ class NonRigidICP:
             self.src_landmark_idxs = self.src_landmark_idxs.to(device)
         if self.tgt_landmark_idxs is not None:
             self.tgt_landmark_idxs = self.tgt_landmark_idxs.to(device)
+        if self.src_triangles is not None:
+            self.src_triangles = self.src_triangles.to(device)
         return self
 
     def run(self):
@@ -269,12 +323,15 @@ class NonRigidICP:
                     w_chamfer=self.config.minimization_conf.w_chamfer,
                     w_landmark=self.config.minimization_conf.w_landmark,
                     w_arap=self.config.minimization_conf.w_arap,
+                    w_edge_length_uniform=self.config.minimization_conf.w_edge_length_uniform,
+                    w_normal_consistency=self.config.minimization_conf.w_normal_consistency,
                     trunc_th=self.config.minimization_conf.trunc_th,
                     device=self.src_pcd.device,
                     eps=self.config.minimization_conf.eps,
                     init_ts=None,
                     init_Rs=None,
                     fix_anchors=self.config.minimization_conf.fix_anchors,
+                    src_triangles=self.src_triangles,
                     report_interval=self.config.minimization_conf.report_interval,
                 )
             )
@@ -314,7 +371,7 @@ class NonRigidICP:
         src_pcd: torch.Tensor,
     ) -> torch.Tensor:
         warped_src_pcd = src_pcd.detach().clone()
-        for history in histories:        
+        for history in histories:
             warped_src_pcd = warp_embedded_deformation(
                 warped_src_pcd,
                 history.graph.poss,

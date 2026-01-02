@@ -1,0 +1,23 @@
+num_iterations: 200
+keep_history_on_memory: true
+write_history_dir: ../output/watertight/optimization_histories
+graph_conf:
+  edges_k: 6
+  num_nodes_per_point: 4
+  weight_type: inv
+  sigma: null
+  eps: 1.0e-08
+correspondence_conf:
+  k: 1
+minimization_conf:
+  learning_rate: 0.001
+  max_iters: 50
+  w_chamfer: 1.0
+  w_landmark: 0.0
+  w_arap: 1.0
+  w_edge_length_uniform: 50.0
+  w_normal_consistency: 50.0
+  trunc_th: -1.0
+  eps: 1.0e-07
+  fix_anchors: True
+  report_interval: 10
