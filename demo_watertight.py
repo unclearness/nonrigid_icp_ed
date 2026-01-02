@@ -80,9 +80,19 @@ def main():
         src_triangles=torch.from_numpy(np.asarray(src_mesh.triangles)).long()
     )
     nricp = nricp.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+    # Run NRICP
     warped_src_pcd = nricp.run()
 
-    warped_src_pcd_np = warped_src_pcd.detach().cpu().numpy()
+    # Refine further with loosen regularization
+    nricp.config.minimization_conf.w_normal_consistency *= 0.1
+    nricp.config.minimization_conf.w_edge_length_uniform *= 0.1
+    nricp.config.minimization_conf.w_arap *= 0.1
+    nricp.config.minimization_conf.learning_rate *= 0.1
+    nricp.config.minimization_conf.max_iters //= 2
+    nricp.config.num_iterations //= 2
+    nricp.src_pcd = warped_src_pcd.detach().clone()
+    warped_src_pcd = nricp.run()
+
     warped_src_pcd_np = warped_src_pcd.detach().cpu().numpy()
     warped_src_mesh = o3d.geometry.TriangleMesh()
     warped_src_mesh.vertices = o3d.utility.Vector3dVector(warped_src_pcd_np)
