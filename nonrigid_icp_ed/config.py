@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Literal
+from pathlib import Path
+
 from omegaconf import OmegaConf
 
 
@@ -33,6 +35,10 @@ class MinimizationConfig:
 @dataclass
 class NonrigidICPEDConfig:
     num_iterations: int = 20
+    keep_history_on_memory: bool = True
+    write_history_dir: str | Path | None = None
     graph_conf: GraphConfig = field(default_factory=GraphConfig)
-    correspondence_conf: CorrespondenceConfig = field(default_factory=CorrespondenceConfig)
+    correspondence_conf: CorrespondenceConfig = field(
+        default_factory=CorrespondenceConfig
+    )
     minimization_conf: MinimizationConfig = field(default_factory=MinimizationConfig)

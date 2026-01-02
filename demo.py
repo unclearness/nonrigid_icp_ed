@@ -13,7 +13,7 @@ from nonrigid_icp_ed.io import (
     import_wrap3_json,
 )
 from nonrigid_icp_ed.util import umeyama
-from nonrigid_icp_ed.registration import NonRigidICP
+from nonrigid_icp_ed.registration import NonRigidICP, OptimizationHistory
 from nonrigid_icp_ed.config import NonrigidICPEDConfig
 
 
@@ -135,7 +135,9 @@ def main():
         radius_edge=radius_edge,
     )
 
+    # Set truncation threshold based on the bounding box diagonal length
     config.minimization_conf.trunc_th = aligned_src_length * 0.05
+    config.write_history_dir = str(output_dir / "optimization_histories")
 
     src_pcd = torch.from_numpy(aligned_mediapipe_points).float()
     tgt_pcd = torch.from_numpy(lpshead_points).float()
@@ -173,6 +175,45 @@ def main():
         str(output_dir / "graph_mesh_end.ply"),
         radius_node=radius_node,
         radius_edge=radius_edge,
+    )
+    torch.save(
+        [h.to_dict() for h in nricp.optimization_histories],
+        str(output_dir / "opt_history.pt"),
+    )
+
+    if False:
+        histories = [
+            OptimizationHistory.from_dict(h)
+            for h in torch.load(str(output_dir / "opt_history.pt"), map_location="cpu")
+        ]
+    else:
+        histories = []
+        for history_pt in sorted(
+            (output_dir / "optimization_histories").glob(
+                "optimization_history_iter_*.pt"
+            )
+        ):
+            print(f"Loading optimization history from: {history_pt}")
+            histories.append(
+                OptimizationHistory.from_dict(
+                    torch.load(history_pt, map_location="cpu")
+                )
+            )
+
+    reconstructed_warped_src_pcd = NonRigidICP.reconstruct_from_optimization_histories(
+        histories, torch.from_numpy(aligned_mediapipe_points).float()
+    )
+    reconstructed_warped_src_pcd_np = (
+        reconstructed_warped_src_pcd.detach().cpu().numpy()
+    )
+    reconstructed_warped_mediapipe_mesh = o3d.geometry.TriangleMesh()
+    reconstructed_warped_mediapipe_mesh.vertices = o3d.utility.Vector3dVector(
+        reconstructed_warped_src_pcd_np
+    )
+    reconstructed_warped_mediapipe_mesh.triangles = mediapipe_mesh.triangles
+    o3d.io.write_triangle_mesh(
+        str(output_dir / "reconstructed_warped_mediapipe_face.obj"),
+        reconstructed_warped_mediapipe_mesh,
     )
 
 

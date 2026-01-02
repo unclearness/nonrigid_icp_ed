@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import torch
@@ -8,23 +8,40 @@ from nonrigid_icp_ed.knn import find_nearest_neighbors_faiss
 
 @dataclass
 class Graph:
-    poss: torch.Tensor | None = None  # (N,3) float
-    edges: torch.Tensor | None = None  # (E,2) long
-    weights: torch.Tensor | None = None  # (E,)  float
+    poss: torch.Tensor = field(
+        default_factory=lambda: torch.empty((0, 3), dtype=torch.float32)
+    )  # (N,3)
+    edges: torch.Tensor = field(
+        default_factory=lambda: torch.empty((0, 2), dtype=torch.long)
+    )  # (E,2)
+    weights: torch.Tensor = field(
+        default_factory=lambda: torch.empty((0,), dtype=torch.float32)
+    )  # (E,)
 
     def __post_init__(self):
-        if self.poss is None:
-            self.poss = torch.empty((0, 3), dtype=torch.float32)
-        if self.edges is None:
-            self.edges = torch.empty((0, 2), dtype=torch.long)
-        if self.weights is None:
-            self.weights = torch.empty((0,), dtype=torch.float32)
-        assert self.edges.ndim == 2 and self.edges.shape[1] == 2, "Edges must be (E,2)"
-        assert self.edges.dtype == torch.long, "Edges must be torch.long"
+        assert self.poss.ndim == 2 and self.poss.shape[1] == 3, "poss must be (N,3)"
+        assert self.edges.ndim == 2 and self.edges.shape[1] == 2, "edges must be (E,2)"
+        assert self.edges.dtype == torch.long, "edges must be torch.long"
+        assert self.weights.ndim == 1, "weights must be (E,)"
 
     @property
     def device(self) -> torch.device:
         return self.poss.device
+
+    def to_dict(self) -> dict:
+        return {
+            "poss": self.poss,
+            "edges": self.edges,
+            "weights": self.weights,
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> "Graph":
+        return Graph(
+            poss=d["poss"],
+            edges=d["edges"],
+            weights=d["weights"],
+        )
 
     def make_edges(
         self,
