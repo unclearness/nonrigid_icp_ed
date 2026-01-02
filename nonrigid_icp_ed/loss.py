@@ -11,11 +11,11 @@ def compute_landmark_loss(
     anchor_poss: torch.Tensor,
     node_Rs: torch.Tensor,
     node_ts: torch.Tensor,
-    anchor_indicesm: torch.Tensor,
+    anchor_indices: torch.Tensor,
     anchor_weights: torch.Tensor,
 ) -> torch.Tensor:
     warped_src_landmarks = warp_embedded_deformation(
-        src_landmarks, anchor_poss, node_Rs, node_ts, anchor_indicesm, anchor_weights
+        src_landmarks, anchor_poss, node_Rs, node_ts, anchor_indices, anchor_weights
     )
     landmark_loss = torch.mean(
         torch.sum((warped_src_landmarks - tgt_landmarks) ** 2, dim=-1)
@@ -74,13 +74,13 @@ def compute_truncated_chamfer_distance_without_reduction(
     T, K_t = tgt2src_correspondence.shape
     assert S == src_points.size(
         0
-    ), "Source correspondence size does not match source points"
+    ), f"Source correspondence size does not match source points: {S} vs {src_points.size(0)}"
     assert T == tgt_points.size(
         0
-    ), "Target correspondence size does not match target points"
+    ), f"Target correspondence size does not match target points: {T} vs {tgt_points.size(0)}"
     assert (
         src_points.shape[-1] == 3 and tgt_points.shape[-1] == 3
-    ), "Points must be of shape (N, 3)"
+    ), f"Points must be of shape (N, 3): got {src_points.shape} and {tgt_points.shape}"
     assert (
         src2tgt_correspondence.dtype == torch.long
         and tgt2src_correspondence.dtype == torch.long
