@@ -3,16 +3,22 @@ from pathlib import Path
 import open3d as o3d
 import numpy as np
 import torch
+from torch import nn
+import loguru
+from scipy.spatial.transform import Rotation
 
 from nonrigid_icp_ed.graph import Graph
 from nonrigid_icp_ed.io import (
     export_graph_as_lines,
     export_graph_as_mesh,
-    import_wrap3_json,
 )
-from nonrigid_icp_ed.util import umeyama, set_random_seed
-from nonrigid_icp_ed.registration import NonRigidICP, OptimizationHistory
+from nonrigid_icp_ed.util import set_random_seed
+from nonrigid_icp_ed.registration import NonRigidICP
 from nonrigid_icp_ed.config import NonrigidIcpEdConfig
+
+from nonrigid_icp_ed.registration import warp_embedded_deformation
+from nonrigid_icp_ed.loss import compute_arap_loss
+
 
 # ------------------------------------------------------------
 # Fade function
@@ -23,8 +29,10 @@ from nonrigid_icp_ed.config import NonrigidIcpEdConfig
 def fade(t):
     return t * t * t * (t * (t * 6 - 15) + 10)
 
+
 def lerp(a, b, t):
     return a + t * (b - a)
+
 
 # ------------------------------------------------------------
 # Gradient generation
@@ -60,6 +68,7 @@ def grad_hash(ix, iy, seed=0):
 
     angle = (h.astype(np.float64) / np.float64(2**32)) * (2.0 * np.pi)
     return np.cos(angle), np.sin(angle)
+
 
 # ------------------------------------------------------------
 # 2D Gradient Noise (Perlin-style)
@@ -115,6 +124,7 @@ def perlin2(x, y, seed=0):
     # Classic Perlin often scales the result to a specific range.
     # Here we keep the raw value (~[-0.7, 0.7]).
     return nxy
+
 
 # ------------------------------------------------------------
 # Fractal Brownian Motion (fBm)
@@ -176,13 +186,15 @@ def make_faces_vectorized(W, H):
 # Grid mesh (two triangles per cell)
 # ------------------------------------------------------------
 def make_terrain_mesh(
-    W=256, H=256,
-    size_x=10.0, size_z=10.0,
+    W=256,
+    H=256,
+    size_x=10.0,
+    size_z=10.0,
     height=2.0,
     noise_scale=5.0,
     seed=1,
     octaves=6,
-    center_around_origin=True
+    center_around_origin=True,
 ):
     xs = np.linspace(0.0, size_x, W, endpoint=True)
     zs = np.linspace(0.0, size_z, H, endpoint=True)
@@ -208,6 +220,117 @@ def make_terrain_mesh(
     return V, F
 
 
+def prepate_target_terrain_mesh(
+    size_x: float,
+    size_z: float,
+    output_dir: Path,
+    radius_node: float,
+    radius_edge: float,
+    src_mesh: o3d.geometry.TriangleMesh,
+    deg: float,
+):
+    graph = Graph()
+    graph.init_as_grid(
+        size_x=size_x,
+        size_y=1.0,
+        size_z=size_z,
+        div_x=int(size_x) * 2,
+        div_y=1,
+        div_z=int(size_z) * 2,
+        connectivity=6,
+        weight_type="inv",
+        translation=torch.tensor([-size_x / 2.0, 0.0, -size_z / 2.0]),
+    )
+    export_graph_as_lines(graph, str(output_dir / "graph_lines_gt.obj"))
+    export_graph_as_mesh(
+        graph,
+        str(output_dir / "graph_mesh_gt.ply"),
+        radius_node=radius_node,
+        radius_edge=radius_edge,
+    )
+
+    rad = np.deg2rad(deg)
+
+    R = Rotation.from_euler("x", rad).as_matrix()
+    R = torch.from_numpy(R).float()
+    rotated_z = (R @ graph.poss.T).T
+    # Apply rotation to the z-end of the graph
+    fix_mask = graph.poss[:, 2] < 0 * (size_z / 2.0)
+    graph.Rs[fix_mask] = R
+    graph.ts[fix_mask] = rotated_z[fix_mask] - graph.poss[fix_mask]
+
+    graph = graph.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+    indices_v, weights_v = graph.assign_nodes_to_points_by_knn(
+        torch.from_numpy(np.asarray(src_mesh.vertices)).float().to(graph.poss.device),
+        K=4,
+        weight_type="inv",
+    )
+    warped = warp_embedded_deformation(
+        torch.from_numpy(np.asarray(src_mesh.vertices)).float().to(graph.poss.device),
+        graph.poss,
+        graph.Rs,
+        graph.ts,
+        indices_v,
+        weights_v,
+    )
+    warped = warped.detach().cpu().numpy()
+    warped_mesh = o3d.geometry.TriangleMesh()
+    warped_mesh.vertices = o3d.utility.Vector3dVector(warped)
+    warped_mesh.triangles = src_mesh.triangles
+    warped_mesh.compute_vertex_normals()
+    o3d.io.write_triangle_mesh(
+        str(output_dir / "tgt_before.ply"),
+        warped_mesh,
+    )
+
+    max_iter = 1000
+    update_Rs = graph.Rs
+    update_ts = graph.ts
+    update_Rs = nn.Parameter(update_Rs)
+    update_ts = nn.Parameter(update_ts)
+    optimizer = torch.optim.Adam(
+        [update_Rs, update_ts],
+        lr=0.001,
+    )
+    for iter in range(max_iter):
+        optimizer.zero_grad()
+        loss_arap = compute_arap_loss(
+            update_Rs,
+            update_ts,
+            graph.poss,
+            graph.edges,
+            graph.weights,
+        )
+        loss = loss_arap
+        loguru.logger.debug(
+            f"Iter {iter+1}/{max_iter}, ARAP Loss: {loss_arap.item():.6f}"
+        )
+        loss.backward()
+        optimizer.step()
+
+    graph.Rs = update_Rs.detach()
+    graph.ts = update_ts.detach()
+
+    warped = warp_embedded_deformation(
+        torch.from_numpy(np.asarray(src_mesh.vertices)).float().to(graph.poss.device),
+        graph.poss,
+        update_Rs,
+        update_ts,
+        indices_v,
+        weights_v,
+    )
+    warped = warped.detach().cpu().numpy()
+    warped_mesh = o3d.geometry.TriangleMesh()
+    warped_mesh.vertices = o3d.utility.Vector3dVector(warped)
+    warped_mesh.triangles = src_mesh.triangles
+    warped_mesh.compute_vertex_normals()
+    o3d.io.write_triangle_mesh(
+        str(output_dir / "tgt_after.ply"),
+        warped_mesh,
+    )
+
+    return warped_mesh
+
 
 def main():
     set_random_seed()
@@ -226,154 +349,31 @@ def main():
         str(output_dir / "src.ply"),
         src_mesh,
     )
-
-    graph = Graph()
-    graph.init_as_grid(
-        size_x=size_x,
-        size_y=1.0,
-        size_z=size_z,
-        div_x=int(size_x) * 2,
-        div_y=1,
-        div_z=int(size_z) * 2,
-        connectivity=6,
-        weight_type="inv",
-        translation =torch.tensor([ -size_x / 2.0, 0.0, -size_z / 2.0 ])
-    )
-    export_graph_as_lines(graph, str(output_dir / "graph_lines_start.obj"))
     raidus_node = size_x / 50.0
     raidus_edge = raidus_node / 10.0
-    export_graph_as_mesh(
-        graph,
-        str(output_dir / "graph_mesh_start.ply"),
-        radius_node=raidus_node,
-        radius_edge=raidus_edge,
+
+    tgt_mesh = prepate_target_terrain_mesh(
+        size_x, size_z, output_dir, raidus_node, raidus_edge, src_mesh, deg=15
     )
 
-    deg = 15
-    rad = np.deg2rad(deg)
-    from scipy.spatial.transform import Rotation
-    R = Rotation.from_euler("x", rad).as_matrix()
-    #rotated_z = R @ np.array([0.0, 0.0, -size_z / 2.0])
-    #rotated_z = R @ graph.poss[:, 2].numpy().reshape(3, -1)
-    R = torch.from_numpy(R).float()
-    rotated_z = (R @ graph.poss.T).T
-    # Apply rotation to the z-end of the graph
-    fix_mask = graph.poss[:, 2] < 0 * (size_z / 2.0)
-    update_mask = ~fix_mask
-    graph.Rs[fix_mask] = R#torch.from_numpy(R).float()
-    graph.ts[fix_mask] = rotated_z[fix_mask] - graph.poss[fix_mask]
-
-    graph = graph.to("cuda" if torch.cuda.is_available() else "cpu")
-    indices_nodes, weights_nodes = graph.assign_nodes_to_points_by_knn(
-        graph.poss,
-        K=4,
-        weight_type="inv",
-    )
-    indices_v, weights_v = graph.assign_nodes_to_points_by_knn(
-        torch.from_numpy(np.asarray(src_mesh.vertices)).float().to(graph.poss.device),
-        K=4,
-        weight_type="inv",
-    )
-    from nonrigid_icp_ed.registration import warp_embedded_deformation
-    from nonrigid_icp_ed.loss import compute_arap_loss
-    from torch import nn
-    import loguru
-    warped = warp_embedded_deformation(
-        torch.from_numpy(np.asarray(src_mesh.vertices)).float().to(graph.poss.device),
-        graph.poss,
-        graph.Rs,
-        graph.ts,
-        indices_v,
-        weights_v,
-    )
-    warped = warped.detach().cpu().numpy()
-    warped_mesh = o3d.geometry.TriangleMesh()
-    print(warped.shape)
-    warped_mesh.vertices = o3d.utility.Vector3dVector(warped)
-    warped_mesh.triangles = src_mesh.triangles
-    warped_mesh.compute_vertex_normals()
-    print(warped)
-    o3d.io.write_triangle_mesh(
-        str(output_dir / "tgt_before.ply"),
-        warped_mesh,
-    )
-
-    max_iter = 1000
-    update_Rs = graph.Rs
-    update_ts = graph.ts
-    update_Rs = nn.Parameter(update_Rs)
-    update_ts = nn.Parameter(update_ts)
-    print(update_Rs)
-    print(update_ts)
-    optimizer = torch.optim.Adam(
-        [update_Rs, update_ts],
-        lr=0.001,
-    )
-    for iter in range(max_iter):
-        optimizer.zero_grad()
-        loss_arap = compute_arap_loss(
-            update_Rs,
-            update_ts,
-            graph.poss,
-            graph.edges,
-            graph.weights,
-        )
-        loss = loss_arap
-        loguru.logger.debug(f"Iter {iter+1}/{max_iter}, ARAP Loss: {loss_arap.item():.6f}")
-        loss.backward()
-        optimizer.step()
-
-    graph.Rs = update_Rs.detach()
-    graph.ts = update_ts.detach()
-
-    warped = warp_embedded_deformation(
-        torch.from_numpy(np.asarray(src_mesh.vertices)).float().to(graph.poss.device),
-        graph.poss,
-        update_Rs,
-        update_ts,
-        indices_v,
-        weights_v,
-    )
-    warped = warped.detach().cpu().numpy()
-    warped_mesh = o3d.geometry.TriangleMesh()
-    print(warped.shape)
-    warped_mesh.vertices = o3d.utility.Vector3dVector(warped)
-    warped_mesh.triangles = src_mesh.triangles
-    warped_mesh.compute_vertex_normals()
-    print(warped)
-    o3d.io.write_triangle_mesh(
-        str(output_dir / "tgt_after.ply"),
-        warped_mesh,
-    )
-    
     graph = Graph()
     expand_ratio = 1.1
     graph.init_as_grid(
-        size_x=size_x*expand_ratio,
+        size_x=size_x * expand_ratio,
         size_y=1.0,
-        size_z=size_z*expand_ratio,
+        size_z=size_z * expand_ratio,
         div_x=5,
         div_y=1,
         div_z=int(size_z) // 2,
         connectivity=6,
         weight_type="inv",
-        translation =torch.tensor([ -size_x * expand_ratio / 2.0, 0.0, -size_z*expand_ratio / 2.0 ])
+        translation=torch.tensor(
+            [-size_x * expand_ratio / 2.0, 0.0, -size_z * expand_ratio / 2.0]
+        ),
     )
-    # graph = Graph()
-    # graph.init_as_grid(
-    #     size_x=size_x,
-    #     size_y=1.0,
-    #     size_z=size_z,
-    #     div_x=int(size_x) * 2,
-    #     div_y=1,
-    #     div_z=int(size_z) * 2,
-    #     connectivity=6,
-    #     weight_type="inv",
-    #     translation =torch.tensor([ -size_x / 2.0, 0.0, -size_z / 2.0 ])
-    # )
     export_graph_as_mesh(
         graph,
-        str(output_dir / "graph_mesh_end.ply"),
+        str(output_dir / "graph_mesh.ply"),
         radius_node=raidus_node,
         radius_edge=raidus_edge,
     )
@@ -382,18 +382,9 @@ def main():
         K=len(graph.poss),
         weight_type="inv",
     )
-    config = NonrigidIcpEdConfig()
-    config.minimization_conf.w_landmark = 0.0
-    trunc_th = -1
-    config.minimization_conf.trunc_th = trunc_th
-    config.minimization_conf.learning_rate = 0.001
-    config.minimization_conf.w_arap = 10.0
-    config.minimization_conf.max_iters = 20
-    config.num_iterations = 20
-    config.keep_history_on_memory = False
-    #config.write_history_dir = None
+    config = NonrigidIcpEdConfig.load_yaml(Path(__file__).parent / "config" / "demo_terrain.yaml")
     src_pcd = torch.from_numpy(np.asarray(src_mesh.vertices)).float()
-    tgt_pcd = torch.from_numpy(np.asarray(warped_mesh.vertices)).float()
+    tgt_pcd = torch.from_numpy(np.asarray(tgt_mesh.vertices)).float()
     nricp = NonRigidICP(
         src_pcd,
         tgt_pcd,
@@ -409,9 +400,7 @@ def main():
     warped_src_mesh = o3d.geometry.TriangleMesh()
     warped_src_mesh.vertices = o3d.utility.Vector3dVector(warped_src_pcd_np)
     warped_src_mesh.triangles = src_mesh.triangles
-    o3d.io.write_triangle_mesh(
-        str(output_dir / "warped_src.obj"), warped_src_mesh
-    )
+    o3d.io.write_triangle_mesh(str(output_dir / "warped_src.obj"), warped_src_mesh)
 
 
 if __name__ == "__main__":

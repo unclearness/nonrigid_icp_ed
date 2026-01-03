@@ -36,8 +36,7 @@ def main():
 
     tgt_points = np.asarray(tgt_sampled_pcd.points)
 
-    config = NonrigidIcpEdConfig()
-    config = config.load_yaml("./config/demo_watertight.yaml")
+    config = NonrigidIcpEdConfig.load_yaml(Path(__file__).parent / "config" / "demo_watertight.yaml")
     node_num = 1500
     rand_indices = np.random.choice(len(src_points), size=node_num, replace=False)
 

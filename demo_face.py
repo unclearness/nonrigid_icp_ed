@@ -78,9 +78,7 @@ def main():
         str(output_dir / "aligned_mediapipe_face.obj"), aligned_mediapipe_mesh
     )
 
-    config = NonrigidIcpEdConfig()
-    config = config.load_yaml("./config/demo_face.yaml")
-    print(config)
+    config = NonrigidIcpEdConfig.load_yaml(Path(__file__).parent / "config" / "demo_face.yaml")
     node_num = 50
     rand_indices = np.random.choice(
         len(aligned_mediapipe_points), size=node_num, replace=False

@@ -189,7 +189,9 @@ class Graph:
             self.poss = self.poss @ rotation.T
 
         self.Rs = (
-            torch.eye(3, device=device).unsqueeze(0).expand(self.poss.shape[0], -1, -1)
+            torch.eye(3, device=device, dtype=torch.float32)
+            .unsqueeze(0)
+            .repeat(self.poss.shape[0], 1, 1)
         )  # (N,3,3)
         self.ts = torch.zeros(self.poss.shape[0], 3, device=device)  # (N,3)
 
@@ -282,9 +284,9 @@ class Graph:
         self.edges = edges.to(dtype=torch.long)
         self.weights = weights.to(dtype=self.poss.dtype)
         self.Rs = (
-            torch.eye(3, device=self.device)
+            torch.eye(3, device=self.device, dtype=torch.float32)
             .unsqueeze(0)
-            .expand(self.poss.shape[0], -1, -1)
+            .repeat(self.poss.shape[0], 1, 1)
         )  # (N,3,3)
         self.ts = torch.zeros(self.poss.shape[0], 3, device=self.device)  # (N,3)
 
