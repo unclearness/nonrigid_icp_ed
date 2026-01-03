@@ -1,4 +1,4 @@
-Nonrigid ICP with Embedded Deformation
+Non-rigid ICP with Embedded Deformation (ED)
 =====================================
 
 Python reference implementation of non‑rigid ICP using an embedded deformation graph. It provides small, reproducible demos for mesh/point‑cloud alignment:

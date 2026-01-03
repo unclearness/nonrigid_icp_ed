@@ -39,7 +39,7 @@ def main():
 
     config = NonrigidIcpEdConfig()
     config = config.load_yaml("./config/demo_watertight.yaml")
-    node_num = 1000
+    node_num = 1500
     rand_indices = np.random.choice(len(src_points), size=node_num, replace=False)
 
     node_poss = src_points[rand_indices]
