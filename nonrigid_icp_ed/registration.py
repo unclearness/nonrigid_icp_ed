@@ -43,8 +43,8 @@ def optimize_embeded_deformation_with_correspondences(
     trunc_th: float,
     device: torch.device,
     eps: float = 1e-7,
-    init_ts: torch.Tensor | None = None,
     init_Rs: torch.Tensor | None = None,
+    init_ts: torch.Tensor | None = None,
     fix_anchors: bool = False,
     src_triangles: torch.Tensor | None = None,
     report_interval: int = 10,
@@ -196,8 +196,6 @@ def optimize_embeded_deformation_with_correspondences(
 class OptimizationHistory:
     graph: Graph
     warped_src_pcd: torch.Tensor
-    node_Rs: torch.Tensor
-    node_ts: torch.Tensor
     src_node_indices: torch.Tensor
     src_node_weights: torch.Tensor
 
@@ -205,8 +203,6 @@ class OptimizationHistory:
         return {
             "graph": self.graph.to_dict(),
             "warped_src_pcd": self.warped_src_pcd,
-            "node_Rs": self.node_Rs,
-            "node_ts": self.node_ts,
             "src_node_indices": self.src_node_indices,
             "src_node_weights": self.src_node_weights,
         }
@@ -216,8 +212,6 @@ class OptimizationHistory:
         return OptimizationHistory(
             graph=Graph.from_dict(d["graph"]),
             warped_src_pcd=d["warped_src_pcd"],
-            node_Rs=d["node_Rs"],
-            node_ts=d["node_ts"],
             src_node_indices=d["src_node_indices"],
             src_node_weights=d["src_node_weights"],
         )
@@ -296,6 +290,7 @@ class NonRigidICP:
                 f"Non-Rigid ICP Iteration {i+1}/{self.config.num_iterations}"
             )
             src_pcd = self.warped_src_pcd.detach().clone()
+
             loguru.logger.info("Finding nearest neighbor correspondences...")
             src2tgt_indices, src2tgt_dists = find_nearest_neighbors_faiss(
                 src_pcd, self.tgt_pcd, self.config.correspondence_conf.k
@@ -303,9 +298,15 @@ class NonRigidICP:
             tgt2src_indices, tgt2src_dists = find_nearest_neighbors_faiss(
                 self.tgt_pcd, src_pcd, self.config.correspondence_conf.k
             )
-            loguru.logger.info("Optimizing embedded deformation...")
 
-            self.warped_src_pcd, self.node_Rs, self.node_ts, self.anchor_poss = (
+            loguru.logger.info("Optimizing embedded deformation...")
+            if self.config.init_with_previous_Rt:
+                init_Rs = self.graph.Rs.detach().clone()
+                init_ts = self.graph.ts.detach().clone()
+            else:
+                init_Rs = None
+                init_ts = None
+            warped_src_pcd, node_Rs, node_ts, anchor_poss = (
                 optimize_embeded_deformation_with_correspondences(
                     graph_nodes=self.graph.poss,
                     graph_edges=self.graph.edges,
@@ -328,27 +329,27 @@ class NonRigidICP:
                     trunc_th=self.config.minimization_conf.trunc_th,
                     device=self.src_pcd.device,
                     eps=self.config.minimization_conf.eps,
-                    init_ts=None,
-                    init_Rs=None,
+                    init_Rs=init_Rs,
+                    init_ts=init_ts,
                     fix_anchors=self.config.minimization_conf.fix_anchors,
                     src_triangles=self.src_triangles,
                     report_interval=self.config.minimization_conf.report_interval,
                 )
             )
 
-            self.warped_src_pcd = self.warped_src_pcd.detach().clone()
-            self.graph.poss = self.anchor_poss.detach().clone()
-            self.node_ts = self.node_ts.detach().clone()
-            self.node_Rs = self.node_Rs.detach().clone()
+            self.warped_src_pcd = warped_src_pcd.detach().clone()
+            self.graph.poss = anchor_poss.detach().clone()
+            self.graph.Rs = node_Rs.detach().clone()
+            self.graph.ts = node_ts.detach().clone()
             history = OptimizationHistory(
                 graph=Graph(
                     poss=self.graph.poss.detach().clone(),
+                    Rs=self.graph.Rs.detach().clone(),
+                    ts=self.graph.ts.detach().clone(),
                     edges=self.graph.edges.detach().clone(),
                     weights=self.graph.weights.detach().clone(),
                 ),
                 warped_src_pcd=self.warped_src_pcd.detach().clone(),
-                node_Rs=self.node_Rs.detach().clone(),
-                node_ts=self.node_ts.detach().clone(),
                 src_node_indices=self.src_node_indices.detach().clone(),
                 src_node_weights=self.src_node_weights.detach().clone(),
             )
@@ -375,8 +376,8 @@ class NonRigidICP:
             warped_src_pcd = warp_embedded_deformation(
                 warped_src_pcd,
                 history.graph.poss,
-                history.node_Rs,
-                history.node_ts,
+                history.graph.Rs,
+                history.graph.ts,
                 history.src_node_indices,
                 history.src_node_weights,
             )

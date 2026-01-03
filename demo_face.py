@@ -1,5 +1,3 @@
-import os
-import random
 from pathlib import Path
 
 import open3d as o3d
@@ -91,7 +89,7 @@ def main():
     node_poss = aligned_mediapipe_points[rand_indices]
 
     graph.poss = torch.from_numpy(node_poss).float()
-    graph.make_edges(K=config.graph_conf.edges_k)
+    graph.init_edges_and_weights_by_knn_from_poss(K=config.graph_conf.edges_k)
     export_graph_as_lines(graph, str(output_dir / "graph_lines_start.obj"))
     aligned_src_length = np.linalg.norm(
         aligned_mediapipe_points.max(axis=0) - aligned_mediapipe_points.min(axis=0)

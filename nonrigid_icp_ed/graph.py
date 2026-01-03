@@ -6,9 +6,83 @@ import torch
 from nonrigid_icp_ed.knn import find_nearest_neighbors_faiss
 
 
+def _neighbor_offsets(connectivity: int, device):
+    if connectivity == 6:
+        offsets = torch.tensor(
+            [
+                [1, 0, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+            ],
+            device=device,
+            dtype=torch.long,
+        )
+    elif connectivity == 26:
+        o = torch.tensor([-1, 0, 1], device=device)
+        grid = torch.stack(torch.meshgrid(o, o, o, indexing="ij"), dim=-1).reshape(
+            -1, 3
+        )
+        offsets = grid[(grid != 0).any(dim=1)]
+    else:
+        raise ValueError("connectivity must be 6 or 26")
+    return offsets  # (M,3)
+
+
+def _make_grid_edges_vectorized(
+    div_x: int,
+    div_y: int,
+    div_z: int,
+    *,
+    connectivity: int = 6,
+    device: torch.device,
+):
+    # grid indices
+    ix = torch.arange(div_x, device=device)
+    iy = torch.arange(div_y, device=device)
+    iz = torch.arange(div_z, device=device)
+
+    gx, gy, gz = torch.meshgrid(ix, iy, iz, indexing="ij")
+    gx = gx.reshape(-1)
+    gy = gy.reshape(-1)
+    gz = gz.reshape(-1)
+
+    # linear index
+    i = gx * (div_y * div_z) + gy * div_z + gz  # (N,)
+
+    offsets = _neighbor_offsets(connectivity, device)  # (M,3)
+    M = offsets.shape[0]
+
+    # broadcast neighbors
+    jx = gx[:, None] + offsets[None, :, 0]
+    jy = gy[:, None] + offsets[None, :, 1]
+    jz = gz[:, None] + offsets[None, :, 2]
+
+    valid = (
+        (jx >= 0) & (jx < div_x) & (jy >= 0) & (jy < div_y) & (jz >= 0) & (jz < div_z)
+    )
+
+    j = jx * (div_y * div_z) + jy * div_z + jz
+
+    # flatten
+    i_flat = i[:, None].expand_as(j)[valid]
+    j_flat = j[valid]
+
+    # avoid duplicates (undirected graph)
+    mask = i_flat < j_flat
+    edges = torch.stack([i_flat[mask], j_flat[mask]], dim=1)
+
+    return edges  # (E,2)
+
+
 @dataclass
 class Graph:
     poss: torch.Tensor = field(
+        default_factory=lambda: torch.empty((0, 3), dtype=torch.float32)
+    )  # (N,3)
+    Rs: torch.Tensor = field(
+        default_factory=lambda: torch.empty((0, 3, 3), dtype=torch.float32)
+    )  # (N,3,3)
+    ts: torch.Tensor = field(
         default_factory=lambda: torch.empty((0, 3), dtype=torch.float32)
     )  # (N,3)
     edges: torch.Tensor = field(
@@ -31,6 +105,8 @@ class Graph:
     def to_dict(self) -> dict:
         return {
             "poss": self.poss,
+            "Rs": self.Rs,
+            "ts": self.ts,
             "edges": self.edges,
             "weights": self.weights,
         }
@@ -39,11 +115,110 @@ class Graph:
     def from_dict(d: dict) -> "Graph":
         return Graph(
             poss=d["poss"],
+            Rs=d["Rs"],
+            ts=d["ts"],
             edges=d["edges"],
             weights=d["weights"],
         )
 
-    def make_edges(
+    def init_as_grid(
+        self,
+        size_x: float,
+        size_y: float,
+        size_z: float,
+        div_x: int,
+        div_y: int,
+        div_z: int,
+        *,
+        connectivity: Literal[6, 26] = 6,
+        weight_type: Literal["inv", "gaussian"] = "inv",
+        sigma: float | None = None,
+        eps: float = 1e-8,
+        translation: torch.Tensor | None = None,
+        rotation: torch.Tensor | None = None,
+    ) -> None:
+        """
+        Initialize graph nodes, edges, and weights on a regular 3D grid.
+
+        Nodes:
+            Regular grid in [0,size_x] x [0,size_y] x [0,size_z]
+
+        Edges:
+            6-neighborhood (axis-aligned) or 26-neighborhood
+
+        Weights:
+            Distance-based (inverse or Gaussian)
+
+        Sets:
+            self.poss    : (N,3)
+            self.edges   : (E,2)  (undirected, i < j)
+            self.weights : (E,)
+        """
+
+        device = self.device
+
+        # ------------------------------------------------------------
+        # 1. Create grid nodes
+        # ------------------------------------------------------------
+        xs = torch.linspace(0.0, size_x, div_x, device=device)
+        ys = torch.linspace(0.0, size_y, div_y, device=device)
+        zs = torch.linspace(0.0, size_z, div_z, device=device)
+
+        grid_x, grid_y, grid_z = torch.meshgrid(xs, ys, zs, indexing="ij")
+        poss = torch.stack(
+            [grid_x.reshape(-1), grid_y.reshape(-1), grid_z.reshape(-1)],
+            dim=1,
+        )  # (N,3)
+        self.poss = poss
+
+        if translation is not None:
+            assert translation.shape == (3,)
+            self.poss += translation
+
+        if rotation is not None:
+            assert rotation.shape == (3, 3)
+            self.poss = self.poss @ rotation.T
+
+        self.Rs = (
+            torch.eye(3, device=device).unsqueeze(0).expand(self.poss.shape[0], -1, -1)
+        )  # (N,3,3)
+        self.ts = torch.zeros(self.poss.shape[0], 3, device=device)  # (N,3)
+
+        # ------------------------------------------------------------
+        # 2. Build edges
+        # ------------------------------------------------------------
+        edges = _make_grid_edges_vectorized(
+            div_x=div_x,
+            div_y=div_y,
+            div_z=div_z,
+            connectivity=connectivity,
+            device=self.device,
+        )
+        self.edges = edges
+
+        # ------------------------------------------------------------
+        # 3. Compute edge weights
+        # ------------------------------------------------------------
+        p0 = poss[edges[:, 0]]  # (E,3)
+        p1 = poss[edges[:, 1]]  # (E,3)
+        d = torch.linalg.norm(p1 - p0, dim=1)  # (E,)
+
+        if weight_type == "inv":
+            weights = 1.0 / (d + eps)
+        elif weight_type == "gaussian":
+            if sigma is None:
+                # heuristic: grid spacing
+                dx = size_x / max(div_x - 1, 1)
+                dy = size_y / max(div_y - 1, 1)
+                dz = size_z / max(div_z - 1, 1)
+                sigma = 0.5 * (dx + dy + dz)
+            weights = torch.exp(-(d**2) / (2.0 * sigma**2))
+        else:
+            raise ValueError("weight_type must be 'inv' or 'gaussian'")
+
+        self.weights = weights
+
+    def init_edges_and_weights_by_knn_from_poss(
         self,
         K: int,
         *,
@@ -95,6 +270,12 @@ class Graph:
 
         self.edges = edges.to(dtype=torch.long)
         self.weights = weights.to(dtype=self.poss.dtype)
+        self.Rs = (
+            torch.eye(3, device=self.device)
+            .unsqueeze(0)
+            .expand(self.poss.shape[0], -1, -1)
+        )  # (N,3,3)
+        self.ts = torch.zeros(self.poss.shape[0], 3, device=self.device)  # (N,3)
 
     def assign_nodes_to_points_by_knn(
         self,

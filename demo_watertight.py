@@ -10,7 +10,7 @@ from nonrigid_icp_ed.io import (
     export_graph_as_mesh,
 )
 from nonrigid_icp_ed.util import set_random_seed
-from nonrigid_icp_ed.registration import NonRigidICP, OptimizationHistory
+from nonrigid_icp_ed.registration import NonRigidICP
 from nonrigid_icp_ed.config import NonrigidIcpEdConfig
 from nonrigid_icp_ed.obj_io import load_obj_as_open3d
 
@@ -24,17 +24,16 @@ def main():
     output_dir = Path(__file__).parent / "output" / "watertight"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    src_mesh = load_obj_as_open3d(str(input_dir / "sphere" / "icosphere5_smart_uv.obj")
-    )
-    tgt_mesh = load_obj_as_open3d(
-        str(input_dir / "spot" / "spot_triangulated.obj")
-    )
+    src_mesh = load_obj_as_open3d(str(input_dir / "sphere" / "icosphere5_smart_uv.obj"))
+    tgt_mesh = load_obj_as_open3d(str(input_dir / "spot" / "spot_triangulated.obj"))
 
     src_points = np.asarray(src_mesh.vertices)
-    #tgt_points = np.asarray(tgt_mesh.vertices)
-    #tgt_sampled_pcd = tgt_mesh.sample_points_poisson_disk(number_of_points=len(src_points) * 15)
-    tgt_sampled_pcd = tgt_mesh.sample_points_uniformly(number_of_points=len(src_points) * 15)
-    
+    # tgt_points = np.asarray(tgt_mesh.vertices)
+    # tgt_sampled_pcd = tgt_mesh.sample_points_poisson_disk(number_of_points=len(src_points) * 15)
+    tgt_sampled_pcd = tgt_mesh.sample_points_uniformly(
+        number_of_points=len(src_points) * 15
+    )
+
     tgt_points = np.asarray(tgt_sampled_pcd.points)
 
     config = NonrigidIcpEdConfig()
@@ -45,7 +44,7 @@ def main():
     node_poss = src_points[rand_indices]
 
     graph.poss = torch.from_numpy(node_poss).float()
-    graph.make_edges(K=config.graph_conf.edges_k)
+    graph.init_edges_and_weights_by_knn_from_poss(K=config.graph_conf.edges_k)
     export_graph_as_lines(graph, str(output_dir / "graph_lines_start.obj"))
     src_length = np.linalg.norm(src_points.max(axis=0) - src_points.min(axis=0))
     radius_node = src_length / 50.0
@@ -77,7 +76,7 @@ def main():
         config,
         src_node_weights,
         src_node_indices,
-        src_triangles=torch.from_numpy(np.asarray(src_mesh.triangles)).long()
+        src_triangles=torch.from_numpy(np.asarray(src_mesh.triangles)).long(),
     )
     nricp = nricp.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     # Run NRICP
@@ -107,6 +106,7 @@ def main():
         radius_node=radius_node,
         radius_edge=radius_edge,
     )
+
 
 if __name__ == "__main__":
     main()
