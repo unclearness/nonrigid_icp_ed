@@ -121,6 +121,15 @@ class Graph:
             weights=d["weights"],
         )
 
+    def to(self, device: torch.device) -> "Graph":
+        return Graph(
+            poss=self.poss.to(device),
+            Rs=self.Rs.to(device),
+            ts=self.ts.to(device),
+            edges=self.edges.to(device),
+            weights=self.weights.to(device),
+        )
+
     def init_as_grid(
         self,
         size_x: float,
@@ -237,6 +246,8 @@ class Graph:
         if N == 0:
             self.edges = torch.empty((0, 2), dtype=torch.long, device=self.device)
             self.weights = torch.empty((0,), dtype=self.poss.dtype, device=self.device)
+            self.Rs = torch.empty((0, 3, 3), dtype=self.poss.dtype, device=self.device)
+            self.ts = torch.empty((0, 3), dtype=self.poss.dtype, device=self.device)
             return
 
         if knn_func is None:
@@ -316,5 +327,5 @@ class Graph:
         else:
             raise ValueError("weight_type must be 'inv' or 'gaussian'")
 
-        w = w / (w.sum(dim=1, keepdim=True) + 1e-12)  # row-normalize
+        w = w / w.sum(dim=1, keepdim=True)  # row-normalize
         return idx.to(dtype=torch.long), w.to(dtype=points.dtype)

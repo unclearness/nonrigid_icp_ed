@@ -268,9 +268,7 @@ class NonRigidICP:
     def to(self, device: torch.device):
         self.src_pcd = self.src_pcd.to(device)
         self.tgt_pcd = self.tgt_pcd.to(device)
-        self.graph.poss = self.graph.poss.to(device)
-        self.graph.edges = self.graph.edges.to(device)
-        self.graph.weights = self.graph.weights.to(device)
+        self.graph = self.graph.to(device)
         self.src_node_weights = self.src_node_weights.to(device)
         self.src_node_indices = self.src_node_indices.to(device)
         if self.src_landmark_idxs is not None:
