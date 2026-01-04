@@ -1,7 +1,6 @@
 num_iterations: 100
 keep_history_on_memory: false
 write_history_dir: null
-init_with_previous_Rt: false
 graph_conf:
   edges_k: 6
   num_nodes_per_point: 4

@@ -10,11 +10,11 @@ graph_conf:
 correspondence_conf:
   k: 1
 minimization_conf:
-  learning_rate: 0.001
-  max_iters: 20
+  learning_rate: 0.0001
+  max_iters: 50
   w_chamfer: 1.0
   w_landmark: 1.0
-  w_arap: 400.0
+  w_arap: 1.0
   w_edge_length_uniform: 0.0
   w_normal_consistency: 0.0
   trunc_th: -1.0

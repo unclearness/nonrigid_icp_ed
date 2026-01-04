@@ -53,7 +53,7 @@ class NonrigidIcpEdConfig:
     num_iterations: int = 20
     keep_history_on_memory: bool = True
     write_history_dir: str | Path | None = None
-    init_with_previous_Rt: bool = False
+    global_deform : bool = True
     graph_conf: GraphConfig = field(default_factory=GraphConfig)
     correspondence_conf: CorrespondenceConfig = field(
         default_factory=CorrespondenceConfig

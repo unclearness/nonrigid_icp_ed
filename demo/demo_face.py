@@ -150,7 +150,7 @@ def main():
         str(output_dir / "opt_history.pt"),
     )
 
-    if False:
+    if True:
         histories = [
             OptimizationHistory.from_dict(h)
             for h in torch.load(str(output_dir / "opt_history.pt"), map_location="cpu")
@@ -170,7 +170,7 @@ def main():
             )
 
     reconstructed_warped_src_pcd = NonRigidICP.reconstruct_from_optimization_histories(
-        histories, torch.from_numpy(aligned_mediapipe_points).float()
+        histories, torch.from_numpy(aligned_mediapipe_points).float(), config.global_deform
     )
     reconstructed_warped_src_pcd_np = (
         reconstructed_warped_src_pcd.detach().cpu().numpy()

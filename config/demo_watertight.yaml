@@ -1,6 +1,7 @@
 num_iterations: 200
 keep_history_on_memory: true
 write_history_dir: ../output/watertight/optimization_histories
+global_deform : false
 graph_conf:
   edges_k: 6
   num_nodes_per_point: 4

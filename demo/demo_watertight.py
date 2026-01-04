@@ -86,6 +86,13 @@ def main():
     nricp = nricp.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     # Run NRICP
     warped_src_pcd = nricp.run()
+    warped_src_pcd_np = warped_src_pcd.detach().cpu().numpy()
+    warped_src_mesh = o3d.geometry.TriangleMesh()
+    warped_src_mesh.vertices = o3d.utility.Vector3dVector(warped_src_pcd_np)
+    warped_src_mesh.triangles = src_mesh.triangles
+    o3d.io.write_triangle_mesh(
+        str(output_dir / "warped_sphere_mesh_intermediate.obj"), warped_src_mesh
+    )
 
     # Refine further with loosen regularization
     nricp.config.minimization_conf.w_normal_consistency *= 0.1
