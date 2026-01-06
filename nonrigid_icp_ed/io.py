@@ -3,6 +3,7 @@ import json
 import open3d as o3d
 import numpy as np
 from scipy.spatial.transform import Rotation
+import torch
 
 from nonrigid_icp_ed.graph import Graph
 
@@ -131,6 +132,77 @@ def export_graph_as_mesh(
         )
 
         # align +Z to segment direction
+        R = _R_from_a_to_b(z_axis, seg)
+        cyl.rotate(R, center=np.array([0.0, 0.0, 0.0]))
+
+        # translate to segment midpoint (Open3D cylinder is centered at origin)
+        mid = (start + end) * 0.5
+        cyl.translate(mid)
+
+        cyl.paint_uniform_color([0.0, 1.0, 0.0])
+        geoms.append(cyl)
+
+    if not geoms:
+        return
+
+    mesh = o3d.geometry.TriangleMesh()
+    for g in geoms:
+        mesh += g
+    mesh.compute_vertex_normals()
+    o3d.io.write_triangle_mesh(filepath, mesh)
+
+
+def export_correspondences_as_lines(
+    src_pcd: torch.Tensor | np.ndarray,
+    tgt_pcd: torch.Tensor | np.ndarray,
+    filepath: str,
+    src_color: tuple = (1.0, 0.0, 0.0),
+    tgt_color: tuple = (0.0, 1.0, 0.0)
+) -> None:
+    if isinstance(src_pcd, torch.Tensor):
+        src_pcd = src_pcd.detach().cpu().numpy()
+    if isinstance(tgt_pcd, torch.Tensor):
+        tgt_pcd = tgt_pcd.detach().cpu().numpy()
+
+    with open(filepath, "w") as f:
+        for v in src_pcd:
+            f.write(f"v {v[0]} {v[1]} {v[2]} {src_color[0]} {src_color[1]} {src_color[2]}\n")
+        for v in tgt_pcd:
+            f.write(f"v {v[0]} {v[1]} {v[2]} {tgt_color[0]} {tgt_color[1]} {tgt_color[2]}\n")
+        n_src = src_pcd.shape[0]
+        for i in range(n_src):
+            f.write(f"l {i + 1} {i + 1 + n_src}\n")
+
+
+def export_correspondences_as_mesh(
+    src_pcd: torch.Tensor | np.ndarray,
+    tgt_pcd: torch.Tensor | np.ndarray,
+    filepath: str,
+    radius: float = 0.002,
+    resolution: int = 5,
+) -> None:
+    if isinstance(src_pcd, torch.Tensor):
+        src_pcd = src_pcd.detach().cpu().numpy()
+    if isinstance(tgt_pcd, torch.Tensor):
+        tgt_pcd = tgt_pcd.detach().cpu().numpy()
+
+    geoms = []
+
+    n_src = src_pcd.shape[0]
+    for i in range(n_src):
+        start = src_pcd[i]
+        end = tgt_pcd[i]
+        seg = end - start
+        h = float(np.linalg.norm(seg))
+        if h <= 1e-12:
+            continue  # skip degenerate
+
+        cyl = o3d.geometry.TriangleMesh.create_cylinder(
+            radius=radius, height=h, resolution=resolution
+        )
+
+        # align +Z to segment direction
+        z_axis = np.array([0.0, 0.0, 1.0], dtype=np.float64)
         R = _R_from_a_to_b(z_axis, seg)
         cyl.rotate(R, center=np.array([0.0, 0.0, 0.0]))
 

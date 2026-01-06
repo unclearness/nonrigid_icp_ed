@@ -142,7 +142,7 @@ class Graph:
         connectivity: Literal[6, 26] = 6,
         weight_type: Literal["inv", "gaussian"] = "inv",
         sigma: float | None = None,
-        eps: float = 1e-8,
+        eps: float = 1e-12,
         translation: torch.Tensor | None = None,
         rotation: torch.Tensor | None = None,
     ) -> None:
@@ -297,7 +297,7 @@ class Graph:
         *,
         weight_type: Literal["inv", "gaussian"] = "inv",
         sigma: float | None = None,
-        eps: float = 1e-8,
+        eps: float = 1e-12,
         knn_func=None,  # expects: (src, tgt, k) -> (idx:(P,k), dist:(P,k))
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """

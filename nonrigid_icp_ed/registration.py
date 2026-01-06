@@ -21,6 +21,49 @@ from nonrigid_icp_ed.knn import find_nearest_neighbors_faiss
 from nonrigid_icp_ed.config import NonrigidIcpEdConfig
 
 
+def rebuild_optimizer_with_state(old_opt, new_params, opt_ctor):
+    """
+    old_opt: existing optimizer
+    new_params: new Parameter iterable to optimize
+    opt_ctor: lambda params: torch.optim.AdamW(params, lr=..., betas=..., ...)
+    """
+    # Make a new optimizer
+    new_opt = opt_ctor(new_params)
+
+    # Copy state if it matches by Parameter object
+    old_sd = old_opt.state_dict()
+    new_sd = new_opt.state_dict()
+
+    def params_in_opt(opt):
+        ps = []
+        for g in opt.param_groups:
+            ps.extend(g["params"])
+        return ps
+
+    old_ps = params_in_opt(old_opt)
+    new_ps = params_in_opt(new_opt)
+
+    old_ids = []
+    for g in old_sd["param_groups"]:
+        old_ids.extend(g["params"])
+    new_ids = []
+    for g in new_sd["param_groups"]:
+        new_ids.extend(g["params"])
+
+    old_map = {id(p): old_id for p, old_id in zip(old_ps, old_ids)}
+    new_map = {id(p): new_id for p, new_id in zip(new_ps, new_ids)}
+
+    # Copy
+    for p in new_ps:
+        oid = old_map.get(id(p), None)
+        nid = new_map.get(id(p), None)
+        if oid is not None and nid is not None and oid in old_sd["state"]:
+            new_sd["state"][nid] = old_sd["state"][oid]
+
+    new_opt.load_state_dict(new_sd)
+    return new_opt
+
+
 def optimize_embeded_deformation_with_correspondences(
     graph_nodes: torch.Tensor,
     graph_edges: torch.Tensor,
@@ -28,7 +71,11 @@ def optimize_embeded_deformation_with_correspondences(
     src_node_weights: torch.Tensor,
     src_node_indices: torch.Tensor,
     max_iters: int,
-    learning_rate: float,
+    lr_translation: float,
+    lr_rotation: float,
+    inherit_lr_state: bool,
+    prev_optimizer_Rs: torch.optim.Optimizer | None,
+    prev_optimizer_ts: torch.optim.Optimizer | None,
     src_pcd: torch.Tensor,
     tgt_pcd: torch.Tensor,
     src2tgt_correspondence: torch.Tensor,
@@ -36,6 +83,8 @@ def optimize_embeded_deformation_with_correspondences(
     src_landmark_idxs: torch.Tensor | None,
     tgt_landmark_idxs: torch.Tensor | None,
     w_chamfer: float,
+    w_src2t_dists: float,
+    w_tgt2s_dists: float,
     w_landmark: float,
     w_arap: float,
     w_edge_length_uniform: float,
@@ -50,7 +99,9 @@ def optimize_embeded_deformation_with_correspondences(
     report_interval: int = 10,
 ):
 
-    assert w_chamfer > 0, "Chamfer weight must be positive."
+    assert (
+        w_chamfer > 0 or w_src2t_dists > 0 or w_tgt2s_dists > 0
+    ), "At least one distance weight must be positive."
 
     anchor_ts = init_ts
     if anchor_ts is None:
@@ -64,8 +115,37 @@ def optimize_embeded_deformation_with_correspondences(
         )
     anchor_rot6_vecs = torch.nn.Parameter(matrix_to_rotation_6d(anchor_Rs))
 
-    optimizer = torch.optim.Adam([anchor_rot6_vecs, anchor_ts], lr=learning_rate)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.999)
+    optimizer_Rs, optimizer_ts = None, None
+    if inherit_lr_state:
+        loguru.logger.info("Inheriting optimizer states...")
+        if prev_optimizer_Rs is not None:
+            optimizer_Rs = rebuild_optimizer_with_state(
+                old_opt=prev_optimizer_Rs,
+                new_params=[anchor_rot6_vecs],
+                opt_ctor=lambda params: torch.optim.Adam(params, lr=lr_rotation),
+            )
+        if prev_optimizer_ts is not None:
+            optimizer_ts = rebuild_optimizer_with_state(
+                old_opt=prev_optimizer_ts,
+                new_params=[anchor_ts],
+                opt_ctor=lambda params: torch.optim.Adam(params, lr=lr_translation),
+            )
+    else:
+        loguru.logger.info("Creating new optimizers...")
+        if 0 < lr_rotation:
+            optimizer_Rs = torch.optim.Adam([anchor_rot6_vecs], lr=lr_rotation)
+        if 0 < lr_translation:
+            optimizer_ts = torch.optim.Adam([anchor_ts], lr=lr_translation)
+    if optimizer_Rs is None:
+        loguru.logger.warning(
+            "Rotation learning rate is set to 0 or negative, optimizer for rotations is not created."
+        )
+    if optimizer_ts is None:
+        loguru.logger.warning(
+            "Translation learning rate is set to 0 or negative, optimizer for translations is not created."
+        )
+
+    # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.999)
 
     anchor_poss = graph_nodes.detach().clone()
 
@@ -150,20 +230,51 @@ def optimize_embeded_deformation_with_correspondences(
         else:
             normal_consistency_loss = 0
 
-        chamfer_distance = compute_truncated_chamfer_distance(
-            warped_src_pcd,
-            tgt_pcd,
-            src2tgt_correspondence,
-            tgt2src_correspondence,
-            trunc_th=trunc_th,
-            reduction="mean",
-            ignore_index=-1,
-        )
+        if w_src2t_dists > 0:
+            src2tgt_dists = torch.norm(
+                warped_src_pcd.unsqueeze(1) - tgt_pcd[src2tgt_correspondence],
+                dim=-1,
+            ).squeeze(-1)
+            valid_mask = src2tgt_dists < trunc_th
+            src2tgt_dists_trunc = torch.where(
+                valid_mask, src2tgt_dists, torch.full_like(src2tgt_dists, trunc_th)
+            )
+            src2tgt_dists_trunc = torch.mean(src2tgt_dists_trunc)
+        else:
+            src2tgt_dists_trunc = 0
+
+        if w_tgt2s_dists > 0:
+            tgt2src_dists = torch.norm(
+                tgt_pcd.unsqueeze(1) - warped_src_pcd[tgt2src_correspondence],
+                dim=-1,
+            ).squeeze(-1)
+            valid_mask = tgt2src_dists < trunc_th
+            tgt2src_dists_trunc = torch.where(
+                valid_mask, tgt2src_dists, torch.full_like(tgt2src_dists, trunc_th)
+            )
+            tgt2src_dists_trunc = torch.mean(tgt2src_dists_trunc)
+        else:
+            tgt2src_dists_trunc = 0
+
+        if w_chamfer > 0:
+            chamfer_distance = compute_truncated_chamfer_distance(
+                warped_src_pcd,
+                tgt_pcd,
+                src2tgt_correspondence,
+                tgt2src_correspondence,
+                trunc_th=trunc_th,
+                reduction="mean",
+                ignore_index=-1,
+            )
+        else:
+            chamfer_distance = 0
 
         loss = (
             arap_loss * w_arap
             + landmark_loss * w_landmark
             + chamfer_distance * w_chamfer
+            + src2tgt_dists_trunc * w_src2t_dists
+            + tgt2src_dists_trunc * w_tgt2s_dists
             + edge_length_uniform_loss * w_edge_length_uniform
             + normal_consistency_loss * w_normal_consistency
         )
@@ -171,7 +282,9 @@ def optimize_embeded_deformation_with_correspondences(
         if i == 0 or (i + 1) % report_interval == 0 or i == max_iters - 1:
             loguru.logger.debug(
                 f"Iter {i+1}/{max_iters}: Total Loss={loss.item():.6f}, "
-                f"Chamfer={chamfer_distance.item():.6f}, "
+                f"Chamfer={chamfer_distance.item() if w_chamfer > 0 else 0:.6f}, "
+                f"S2T_Dists={src2tgt_dists_trunc.item() if w_src2t_dists > 0 else 0:.6f}, "
+                f"T2S_Dists={tgt2src_dists_trunc.item() if w_tgt2s_dists > 0 else 0:.6f}, "
                 f"Landmark={landmark_loss.item() if w_landmark > 0 else 0:.6f}, "
                 f"ARAP={arap_loss.item() if w_arap > 0 else 0:.6f}, "
                 f"EdgeLengthUniform={edge_length_uniform_loss.item() if w_edge_length_uniform > 0 else 0:.6f}, "
@@ -182,12 +295,29 @@ def optimize_embeded_deformation_with_correspondences(
             # No backward if converged or the last iteration
             break
 
-        optimizer.zero_grad()
+        if optimizer_Rs is not None:
+            optimizer_Rs.zero_grad()
+        if optimizer_ts is not None:
+            optimizer_ts.zero_grad()
         loss.backward()
-        optimizer.step()
-        scheduler.step()
+        if optimizer_Rs is not None:
+            optimizer_Rs.step()
+        if optimizer_ts is not None:
+            optimizer_ts.step()
 
-    return warped_src_pcd, anchor_Rs, anchor_ts, anchor_poss
+        # optimizer.zero_grad()
+        # loss.backward()
+        # optimizer.step()
+        # scheduler.step()
+
+    return (
+        warped_src_pcd,
+        anchor_Rs,
+        anchor_ts,
+        anchor_poss,
+        optimizer_Rs,
+        optimizer_ts,
+    )
 
 
 @dataclass
@@ -227,6 +357,8 @@ class NonRigidICP:
         src_landmark_idxs: torch.Tensor | None = None,
         tgt_landmark_idxs: torch.Tensor | None = None,
         src_triangles: torch.Tensor | None = None,
+        src_normals: torch.Tensor | None = None,
+        tgt_normals: torch.Tensor | None = None,
     ):
         self.initialize(
             src_pcd,
@@ -238,6 +370,8 @@ class NonRigidICP:
             src_landmark_idxs,
             tgt_landmark_idxs,
             src_triangles,
+            src_normals,
+            tgt_normals,
         )
 
     def initialize(
@@ -251,6 +385,8 @@ class NonRigidICP:
         src_landmark_idxs: torch.Tensor | None = None,
         tgt_landmark_idxs: torch.Tensor | None = None,
         src_triangles: torch.Tensor | None = None,
+        src_normals: torch.Tensor | None = None,
+        tgt_normals: torch.Tensor | None = None,
     ):
         self.src_pcd = src_pcd
         self.tgt_pcd = tgt_pcd
@@ -261,6 +397,8 @@ class NonRigidICP:
         self.src_landmark_idxs = src_landmark_idxs
         self.tgt_landmark_idxs = tgt_landmark_idxs
         self.src_triangles = src_triangles
+        self.src_normals = src_normals
+        self.tgt_normals = tgt_normals
         self.optimization_histories = []
 
     def to(self, device: torch.device):
@@ -275,12 +413,21 @@ class NonRigidICP:
             self.tgt_landmark_idxs = self.tgt_landmark_idxs.to(device)
         if self.src_triangles is not None:
             self.src_triangles = self.src_triangles.to(device)
+        if self.src_normals is not None:
+            self.src_normals = self.src_normals.to(device)
+        if self.tgt_normals is not None:
+            self.tgt_normals = self.tgt_normals.to(device)
         return self
 
     def run(self):
         loguru.logger.info("Starting Non-Rigid ICP with Embedded Deformation...")
         self.warped_src_pcd = self.src_pcd.detach().clone()
+        self.warped_src_normals = (
+            self.src_normals.detach().clone() if self.src_normals is not None else None
+        )
         self.optimization_histories = []
+        prev_optimizer_Rs = None
+        prev_optimizer_ts = None
         for i in range(self.config.num_iterations):
             loguru.logger.info(
                 f"Non-Rigid ICP Iteration {i+1}/{self.config.num_iterations}"
@@ -306,35 +453,51 @@ class NonRigidICP:
                 init_Rs = None
                 init_ts = None
                 src_pcd = self.warped_src_pcd.detach().clone()
-            warped_src_pcd, node_Rs, node_ts, anchor_poss = (
-                optimize_embeded_deformation_with_correspondences(
-                    graph_nodes=self.graph.poss,
-                    graph_edges=self.graph.edges,
-                    graph_edge_weights=self.graph.weights,
-                    src_node_weights=self.src_node_weights,
-                    src_node_indices=self.src_node_indices,
-                    max_iters=self.config.minimization_conf.max_iters,
-                    learning_rate=self.config.minimization_conf.learning_rate,
-                    src_pcd=src_pcd,
-                    tgt_pcd=self.tgt_pcd,
-                    src2tgt_correspondence=src2tgt_indices,
-                    tgt2src_correspondence=tgt2src_indices,
-                    src_landmark_idxs=self.src_landmark_idxs,
-                    tgt_landmark_idxs=self.tgt_landmark_idxs,
-                    w_chamfer=self.config.minimization_conf.w_chamfer,
-                    w_landmark=self.config.minimization_conf.w_landmark,
-                    w_arap=self.config.minimization_conf.w_arap,
-                    w_edge_length_uniform=self.config.minimization_conf.w_edge_length_uniform,
-                    w_normal_consistency=self.config.minimization_conf.w_normal_consistency,
-                    trunc_th=self.config.minimization_conf.trunc_th,
-                    device=self.src_pcd.device,
-                    eps=self.config.minimization_conf.eps,
-                    init_Rs=init_Rs,
-                    init_ts=init_ts,
-                    fix_anchors=self.config.minimization_conf.fix_anchors,
-                    src_triangles=self.src_triangles,
-                    report_interval=self.config.minimization_conf.report_interval,
-                )
+            if i == 0:
+                inherit_lr_state = False
+            else:
+                inherit_lr_state = (self.config.minimization_conf.inherit_lr_state,)
+
+            (
+                warped_src_pcd,
+                node_Rs,
+                node_ts,
+                anchor_poss,
+                prev_optimizer_Rs,
+                prev_optimizer_ts,
+            ) = optimize_embeded_deformation_with_correspondences(
+                graph_nodes=self.graph.poss,
+                graph_edges=self.graph.edges,
+                graph_edge_weights=self.graph.weights,
+                src_node_weights=self.src_node_weights,
+                src_node_indices=self.src_node_indices,
+                max_iters=self.config.minimization_conf.max_iters,
+                lr_translation=self.config.minimization_conf.lr_translation,
+                lr_rotation=self.config.minimization_conf.lr_rotation,
+                inherit_lr_state=inherit_lr_state,
+                prev_optimizer_Rs=prev_optimizer_Rs,
+                prev_optimizer_ts=prev_optimizer_ts,
+                src_pcd=src_pcd,
+                tgt_pcd=self.tgt_pcd,
+                src2tgt_correspondence=src2tgt_indices,
+                tgt2src_correspondence=tgt2src_indices,
+                src_landmark_idxs=self.src_landmark_idxs,
+                tgt_landmark_idxs=self.tgt_landmark_idxs,
+                w_chamfer=self.config.minimization_conf.w_chamfer,
+                w_src2t_dists=self.config.minimization_conf.w_src2t_dists,
+                w_tgt2s_dists=self.config.minimization_conf.w_tgt2s_dists,
+                w_landmark=self.config.minimization_conf.w_landmark,
+                w_arap=self.config.minimization_conf.w_arap,
+                w_edge_length_uniform=self.config.minimization_conf.w_edge_length_uniform,
+                w_normal_consistency=self.config.minimization_conf.w_normal_consistency,
+                trunc_th=self.config.minimization_conf.trunc_th,
+                device=self.src_pcd.device,
+                eps=self.config.minimization_conf.eps,
+                init_Rs=init_Rs,
+                init_ts=init_ts,
+                fix_anchors=self.config.minimization_conf.fix_anchors,
+                src_triangles=self.src_triangles,
+                report_interval=self.config.minimization_conf.report_interval,
             )
 
             self.warped_src_pcd = warped_src_pcd.detach().clone()

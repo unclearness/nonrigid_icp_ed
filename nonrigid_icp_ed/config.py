@@ -35,9 +35,13 @@ class CorrespondenceConfig:
 
 @dataclass
 class MinimizationConfig:
-    learning_rate: float = 0.001
+    lr_translation: float = 0.01
+    lr_rotation: float = 0.001
+    inherit_lr_state: bool = True
     max_iters: int = 20
     w_chamfer: float = 1.0
+    w_src2t_dists: float = 0.0
+    w_tgt2s_dists: float = 0.0
     w_landmark: float = 1.0
     w_arap: float = 400.0
     w_edge_length_uniform: float = 0.0

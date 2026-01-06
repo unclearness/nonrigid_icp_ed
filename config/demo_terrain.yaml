@@ -10,7 +10,9 @@ graph_conf:
 correspondence_conf:
   k: 1
 minimization_conf:
-  learning_rate: 0.001
+  lr_translation: 0.001
+  lr_rotation: 0.001
+  inherit_lr_state: true
   max_iters: 20
   w_chamfer: 1.0
   w_landmark: 0.0

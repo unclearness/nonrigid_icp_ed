@@ -98,7 +98,8 @@ def main():
     nricp.config.minimization_conf.w_normal_consistency *= 0.1
     nricp.config.minimization_conf.w_edge_length_uniform *= 0.1
     nricp.config.minimization_conf.w_arap *= 0.1
-    nricp.config.minimization_conf.learning_rate *= 0.1
+    nricp.config.minimization_conf.lr_rotation *= 0.1
+    nricp.config.minimization_conf.lr_translation *= 0.1
     nricp.config.minimization_conf.max_iters //= 2
     nricp.config.num_iterations //= 2
     nricp.src_pcd = warped_src_pcd.detach().clone()
