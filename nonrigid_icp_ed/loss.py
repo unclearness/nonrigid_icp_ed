@@ -51,6 +51,17 @@ def compute_arap_loss(
     return loss
 
 
+def compute_truncated_l2(pcd1, pcd2, correspondence_12, trunc_th):
+    dists = torch.norm(
+        pcd1.unsqueeze(1) - pcd2[correspondence_12],
+        dim=-1,
+    ).squeeze(-1)
+    valid_mask = dists < trunc_th
+    dists_trunc = torch.where(valid_mask, dists, torch.full_like(dists, trunc_th))
+    dists_trunc = torch.mean(dists_trunc)
+    return dists_trunc
+
+
 def compute_truncated_chamfer_distance_without_reduction(
     src_points: torch.Tensor,  # (S, 3)
     tgt_points: torch.Tensor,  # (T, 3)
@@ -184,19 +195,19 @@ def compute_unique_edges(F: torch.Tensor) -> torch.Tensor:
     e01 = F[:, [0, 1]]
     e12 = F[:, [1, 2]]
     e20 = F[:, [2, 0]]
-    edges = torch.cat([e01, e12, e20], dim=0)      # (3F,2)
+    edges = torch.cat([e01, e12, e20], dim=0)  # (3F,2)
     edges = torch.sort(edges, dim=1).values
-    edges = torch.unique(edges, dim=0)             # (E,2)
+    edges = torch.unique(edges, dim=0)  # (E,2)
     return edges
 
 
 def compute_edge_length_uniform_loss(
-    V: torch.Tensor,          # (N,3), requires_grad=True
+    V: torch.Tensor,  # (N,3), requires_grad=True
     *,
-    F: torch.Tensor | None = None,          # (F,3), torch.long
-    edges : torch.Tensor | None = None,  # (E,2), torch.long
+    F: torch.Tensor | None = None,  # (F,3), torch.long
+    edges: torch.Tensor | None = None,  # (E,2), torch.long
     target_length: float | None = None,
-    target_mode: str = "mean",   # "median" or "mean"
+    target_mode: str = "mean",  # "median" or "mean"
 ) -> torch.Tensor:
     """
     Edge length uniformization loss.
@@ -208,7 +219,9 @@ def compute_edge_length_uniform_loss(
     if F is not None:
         assert F.ndim == 2 and F.shape[1] == 3
         assert F.dtype == torch.long
-    assert (edges is None) != (F is None), "Either edges or F must be provided, but not both."
+    assert (edges is None) != (
+        F is None
+    ), "Either edges or F must be provided, but not both."
 
     if edges is None and F is not None:
         edges = compute_unique_edges(F)
@@ -220,7 +233,7 @@ def compute_edge_length_uniform_loss(
     vj = V[edges[:, 1]]
 
     # edge lengths
-    lengths = torch.norm(vi - vj, dim=1)            # (E,)
+    lengths = torch.norm(vi - vj, dim=1)  # (E,)
 
     # --- target length ---
     if target_length is None:
@@ -273,7 +286,7 @@ def build_adjacent_face_pairs(F: torch.Tensor) -> torch.Tensor:
 
     pairs = []
     for faces in edge2faces.values():
-        if len(faces) == 2:      # internal edge
+        if len(faces) == 2:  # internal edge
             pairs.append((faces[0], faces[1]))
         # non-manifold (>2) は必要ならここで全部組み合わせる等、用途に応じて
 
@@ -284,12 +297,12 @@ def build_adjacent_face_pairs(F: torch.Tensor) -> torch.Tensor:
 
 
 def compute_adjacent_normal_consistency_loss(
-    V: torch.Tensor,                 # (N,3) requires_grad=True
-    F_tri: torch.Tensor,             # (T,3) long
-    adj_faces: torch.Tensor,         # (A,2) long (from build_adjacent_face_pairs)
+    V: torch.Tensor,  # (N,3) requires_grad=True
+    F_tri: torch.Tensor,  # (T,3) long
+    adj_faces: torch.Tensor,  # (A,2) long (from build_adjacent_face_pairs)
     *,
-    cos_margin: float = 0.0,         # 0 => forbid >90deg flips, 0.2=>stricter
-    beta: float = 50.0,              # softplus hardness
+    cos_margin: float = 0.0,  # 0 => forbid >90deg flips, 0.2=>stricter
+    beta: float = 50.0,  # softplus hardness
     eps: float = 1e-12,
 ) -> torch.Tensor:
     """

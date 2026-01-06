@@ -10,6 +10,7 @@ from nonrigid_icp_ed.warp import warp_embedded_deformation
 from nonrigid_icp_ed.util import rotation_6d_to_matrix, matrix_to_rotation_6d
 from nonrigid_icp_ed.loss import (
     compute_truncated_chamfer_distance,
+    compute_truncated_l2,
     compute_arap_loss,
     compute_landmark_loss,
     compute_unique_edges,
@@ -231,28 +232,22 @@ def optimize_embeded_deformation_with_correspondences(
             normal_consistency_loss = 0
 
         if w_src2t_dists > 0:
-            src2tgt_dists = torch.norm(
-                warped_src_pcd.unsqueeze(1) - tgt_pcd[src2tgt_correspondence],
-                dim=-1,
-            ).squeeze(-1)
-            valid_mask = src2tgt_dists < trunc_th
-            src2tgt_dists_trunc = torch.where(
-                valid_mask, src2tgt_dists, torch.full_like(src2tgt_dists, trunc_th)
+            src2tgt_dists_trunc = compute_truncated_l2(
+                warped_src_pcd,
+                tgt_pcd,
+                src2tgt_correspondence,
+                trunc_th=trunc_th,
             )
-            src2tgt_dists_trunc = torch.mean(src2tgt_dists_trunc)
         else:
             src2tgt_dists_trunc = 0
 
         if w_tgt2s_dists > 0:
-            tgt2src_dists = torch.norm(
-                tgt_pcd.unsqueeze(1) - warped_src_pcd[tgt2src_correspondence],
-                dim=-1,
-            ).squeeze(-1)
-            valid_mask = tgt2src_dists < trunc_th
-            tgt2src_dists_trunc = torch.where(
-                valid_mask, tgt2src_dists, torch.full_like(tgt2src_dists, trunc_th)
+            tgt2src_dists_trunc = compute_truncated_l2(
+                tgt_pcd,
+                warped_src_pcd,
+                tgt2src_correspondence,
+                trunc_th=trunc_th,
             )
-            tgt2src_dists_trunc = torch.mean(tgt2src_dists_trunc)
         else:
             tgt2src_dists_trunc = 0
 
