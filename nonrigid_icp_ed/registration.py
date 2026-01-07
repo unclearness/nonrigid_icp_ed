@@ -20,7 +20,7 @@ from nonrigid_icp_ed.loss import (
     build_adjacent_face_pairs,
     compute_adjacent_normal_consistency_loss,
 )
-from nonrigid_icp_ed.knn import find_nearest_neighbors_faiss
+from nonrigid_icp_ed.knn import find_nearest_neighbors_open3d
 from nonrigid_icp_ed.config import NonrigidIcpEdConfig
 
 
@@ -462,10 +462,10 @@ class NonRigidICP:
             )
 
             loguru.logger.info("Finding nearest neighbor correspondences...")
-            src2tgt_indices, src2tgt_dists = find_nearest_neighbors_faiss(
+            src2tgt_indices, src2tgt_dists = find_nearest_neighbors_open3d(
                 self.warped_src_pcd, self.tgt_pcd, self.config.correspondence_conf.k
             )
-            tgt2src_indices, tgt2src_dists = find_nearest_neighbors_faiss(
+            tgt2src_indices, tgt2src_dists = find_nearest_neighbors_open3d(
                 self.tgt_pcd, self.warped_src_pcd, self.config.correspondence_conf.k
             )
 
@@ -568,6 +568,24 @@ class NonRigidICP:
         return self.warped_src_pcd
 
     @staticmethod
+    def reassign_indices_and_weights(
+        src_pcd: torch.Tensor,
+        graph_nodes: torch.Tensor,
+        num_nodes_per_point: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        src_node_indices, src_node_dists = find_nearest_neighbors_faiss(
+            src_pcd, graph_nodes, num_nodes_per_point
+        )
+        # Convert distances to weights using Gaussian kernel
+        sigma = torch.mean(torch.sqrt(src_node_dists))
+        src_node_weights = torch.exp(-src_node_dists / (2 * sigma * sigma))
+        # Normalize weights
+        src_node_weights = src_node_weights / (
+            torch.sum(src_node_weights, dim=1, keepdim=True) + 1e-8
+        )
+        return src_node_indices, src_node_weights
+
+    @staticmethod
     def reconstruct_from_optimization_histories(
         histories: list[OptimizationHistory],
         src_pcd: torch.Tensor,
@@ -577,24 +595,54 @@ class NonRigidICP:
         if global_deform:
             # Apply only the last history
             last_history = histories[-1]
+            src_node_indices, src_node_weights = (
+                last_history.src_node_indices,
+                last_history.src_node_weights,
+            )
+            if warped_src_pcd.shape[0] != last_history.warped_src_pcd.shape[0]:
+                loguru.logger.info(
+                    "Reassigning node indices and weights for global deformation reconstruction..."
+                )
+                src_node_indices, src_node_weights = (
+                    NonRigidICP.reassign_indices_and_weights(
+                        warped_src_pcd,
+                        last_history.graph.poss,
+                        last_history.src_node_indices.shape[1],
+                    )
+                )
             warped_src_pcd = warp_embedded_deformation(
                 warped_src_pcd,
                 last_history.graph.poss,
                 last_history.graph.Rs,
                 last_history.graph.ts,
-                last_history.src_node_indices,
-                last_history.src_node_weights,
+                src_node_indices,
+                src_node_weights,
             )
         else:
             # Apply all histories sequentially
             for history in histories:
+                src_node_indices, src_node_weights = (
+                    history.src_node_indices,
+                    history.src_node_weights,
+                )
+                if warped_src_pcd.shape[0] != history.warped_src_pcd.shape[0]:
+                    loguru.logger.info(
+                        "Reassigning node indices and weights for sequential deformation reconstruction..."
+                    )
+                    src_node_indices, src_node_weights = (
+                        NonRigidICP.reassign_indices_and_weights(
+                            warped_src_pcd,
+                            history.graph.poss,
+                            history.src_node_indices.shape[1],
+                        )
+                    )
                 warped_src_pcd = warp_embedded_deformation(
                     warped_src_pcd,
                     history.graph.poss,
                     history.graph.Rs,
                     history.graph.ts,
-                    history.src_node_indices,
-                    history.src_node_weights,
+                    src_node_indices,
+                    src_node_weights,
                 )
                 warped_src_pcd = warped_src_pcd.detach().clone()
 

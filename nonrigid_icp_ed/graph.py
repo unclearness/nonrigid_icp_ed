@@ -3,7 +3,7 @@ from typing import Literal
 
 import torch
 
-from nonrigid_icp_ed.knn import find_nearest_neighbors_faiss
+from nonrigid_icp_ed.knn import find_nearest_neighbors_open3d
 
 
 def _neighbor_offsets(connectivity: int, device):
@@ -253,7 +253,7 @@ class Graph:
             return
 
         if knn_func is None:
-            knn_func = find_nearest_neighbors_faiss
+            knn_func = find_nearest_neighbors_open3d
         # K+1 to include self, then drop self neighbor (distance 0)
         idx, dist = knn_func(self.poss, self.poss, K + 1)  # (N, K+1)
         # Drop the first column (self)
@@ -317,7 +317,7 @@ class Graph:
             )
 
         if knn_func is None:
-            knn_func = find_nearest_neighbors_faiss
+            knn_func = find_nearest_neighbors_open3d
 
         idx, dist = knn_func(points, self.poss, K)  # (P, K)
         if weight_type == "inv":
