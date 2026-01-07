@@ -21,7 +21,7 @@ from nonrigid_icp_ed.loss import (
     compute_adjacent_normal_consistency_loss,
 )
 from nonrigid_icp_ed.knn import find_nearest_neighbors_open3d
-from nonrigid_icp_ed.config import NonrigidIcpEdConfig
+from nonrigid_icp_ed.config import NonrigidIcpConfig
 
 
 def rebuild_optimizer_with_state(old_opt, new_params, opt_ctor):
@@ -342,13 +342,13 @@ class OptimizationHistory:
         )
 
 
-class NonRigidICP:
+class NonRigidIcp:
     def __init__(
         self,
         src_pcd: torch.Tensor,
         tgt_pcd: torch.Tensor,
         graph: Graph,
-        config: NonrigidIcpEdConfig,
+        config: NonrigidIcpConfig,
         src_node_weights: torch.Tensor,
         src_node_indices: torch.Tensor,
         src_landmark_idxs: torch.Tensor | None = None,
@@ -359,7 +359,7 @@ class NonRigidICP:
         callback_after_correspondence_search: (
             Callable[
                 [
-                    NonRigidICP,
+                    NonRigidIcp,
                     int,
                     torch.Tensor,
                     torch.Tensor,
@@ -391,7 +391,7 @@ class NonRigidICP:
         src_pcd: torch.Tensor,
         tgt_pcd: torch.Tensor,
         graph: Graph,
-        config: NonrigidIcpEdConfig,
+        config: NonrigidIcpConfig,
         src_node_weights: torch.Tensor,
         src_node_indices: torch.Tensor,
         src_landmark_idxs: torch.Tensor | None = None,
@@ -402,7 +402,7 @@ class NonRigidICP:
         callback_after_correspondence_search: (
             Callable[
                 [
-                    NonRigidICP,
+                    NonRigidIcp,
                     int,
                     torch.Tensor,
                     torch.Tensor,
@@ -604,7 +604,7 @@ class NonRigidICP:
                     "Reassigning node indices and weights for global deformation reconstruction..."
                 )
                 src_node_indices, src_node_weights = (
-                    NonRigidICP.reassign_indices_and_weights(
+                    NonRigidIcp.reassign_indices_and_weights(
                         warped_src_pcd,
                         last_history.graph.poss,
                         last_history.src_node_indices.shape[1],
@@ -630,7 +630,7 @@ class NonRigidICP:
                         "Reassigning node indices and weights for sequential deformation reconstruction..."
                     )
                     src_node_indices, src_node_weights = (
-                        NonRigidICP.reassign_indices_and_weights(
+                        NonRigidIcp.reassign_indices_and_weights(
                             warped_src_pcd,
                             history.graph.poss,
                             history.src_node_indices.shape[1],

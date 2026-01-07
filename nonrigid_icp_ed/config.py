@@ -53,7 +53,7 @@ class MinimizationConfig:
 
 
 @dataclass
-class NonrigidIcpEdConfig:
+class NonrigidIcpConfig:
     num_iterations: int = 20
     keep_history_on_memory: bool = True
     write_history_dir: str | Path | None = None
@@ -69,7 +69,7 @@ class NonrigidIcpEdConfig:
     # --------
     def resolve_paths(
         self, base_dir: str | Path | None = None
-    ) -> "NonrigidIcpEdConfig":
+    ) -> "NonrigidIcpConfig":
         """Normalize path-like fields (str -> Path) and optionally resolve relative paths."""
         if self.write_history_dir is not None:
             p = Path(self.write_history_dir)
@@ -94,7 +94,7 @@ class NonrigidIcpEdConfig:
         return path
 
     @classmethod
-    def load_yaml(cls, path: str | Path) -> "NonrigidIcpEdConfig":
+    def load_yaml(cls, path: str | Path) -> "NonrigidIcpConfig":
         """Load YAML into dataclass with schema validation."""
         path = Path(path)
         cfg = OmegaConf.load(str(path))
@@ -104,14 +104,14 @@ class NonrigidIcpEdConfig:
         merged = OmegaConf.merge(schema, cfg)
 
         # Convert to dataclass instance
-        obj: NonrigidIcpEdConfig = OmegaConf.to_object(merged)  # type: ignore[assignment]
+        obj: NonrigidIcpConfig = OmegaConf.to_object(merged)  # type: ignore[assignment]
 
         # Normalize path-like fields relative to config file location
         obj.resolve_paths(base_dir=path.parent)
         return obj
 
     @classmethod
-    def load_yaml_strict(cls, path: str | Path) -> "NonrigidIcpEdConfig":
+    def load_yaml_strict(cls, path: str | Path) -> "NonrigidIcpConfig":
         """
         Strict loader: errors on unknown keys / type mismatch.
         (OmegaConf is mostly strict when you use structured + set_struct)
@@ -123,7 +123,7 @@ class NonrigidIcpEdConfig:
         OmegaConf.set_struct(schema, True)  # disallow new keys
         merged = OmegaConf.merge(schema, cfg)  # will raise if unknown keys exist
 
-        obj: NonrigidIcpEdConfig = OmegaConf.to_object(merged)  # type: ignore[assignment]
+        obj: NonrigidIcpConfig = OmegaConf.to_object(merged)  # type: ignore[assignment]
         obj.resolve_paths(base_dir=path.parent)
         return obj
 
@@ -132,9 +132,9 @@ class NonrigidIcpEdConfig:
 # Example usage
 # ----------------------------
 if __name__ == "__main__":
-    conf = NonrigidIcpEdConfig(write_history_dir="runs/exp01")
+    conf = NonrigidIcpConfig(write_history_dir="runs/exp01")
     conf.save_yaml("config.yaml")
 
-    loaded = NonrigidIcpEdConfig.load_yaml("config.yaml")
+    loaded = NonrigidIcpConfig.load_yaml("config.yaml")
     print(loaded)
     print(type(loaded.write_history_dir), loaded.write_history_dir)

@@ -14,8 +14,8 @@ from nonrigid_icp_ed.io import (
     import_wrap3_json,
 )
 from nonrigid_icp_ed.util import umeyama, set_random_seed
-from nonrigid_icp_ed.registration import NonRigidICP, OptimizationHistory
-from nonrigid_icp_ed.config import NonrigidIcpEdConfig
+from nonrigid_icp_ed.registration import NonRigidIcp, OptimizationHistory
+from nonrigid_icp_ed.config import NonrigidIcpConfig
 
 
 def extract_vertex_ids_from_tri_landmarks(
@@ -82,7 +82,7 @@ def main():
     )
 
     config_dir = Path(__file__).parent.parent / "config"
-    config = NonrigidIcpEdConfig.load_yaml(config_dir / "demo_face.yaml")
+    config = NonrigidIcpConfig.load_yaml(config_dir / "demo_face.yaml")
     node_num = 50
     rand_indices = np.random.choice(
         len(aligned_mediapipe_points), size=node_num, replace=False
@@ -117,7 +117,7 @@ def main():
         sigma=config.graph_conf.sigma,
         eps=config.graph_conf.eps,
     )
-    nricp = NonRigidICP(
+    nricp = NonRigidIcp(
         src_pcd,
         tgt_pcd,
         graph,
@@ -169,7 +169,7 @@ def main():
                 )
             )
 
-    reconstructed_warped_src_pcd = NonRigidICP.reconstruct_from_optimization_histories(
+    reconstructed_warped_src_pcd = NonRigidIcp.reconstruct_from_optimization_histories(
         histories, torch.from_numpy(aligned_mediapipe_points).float(), config.global_deform
     )
     reconstructed_warped_src_pcd_np = (

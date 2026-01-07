@@ -16,8 +16,8 @@ from nonrigid_icp_ed.io import (
     export_graph_as_mesh,
 )
 from nonrigid_icp_ed.util import set_random_seed
-from nonrigid_icp_ed.registration import NonRigidICP
-from nonrigid_icp_ed.config import NonrigidIcpEdConfig
+from nonrigid_icp_ed.registration import NonRigidIcp
+from nonrigid_icp_ed.config import NonrigidIcpConfig
 
 from nonrigid_icp_ed.registration import warp_embedded_deformation
 from nonrigid_icp_ed.loss import compute_arap_loss
@@ -360,7 +360,7 @@ def main():
     )
     
     config_dir = Path(__file__).parent.parent / "config"
-    config = NonrigidIcpEdConfig.load_yaml(config_dir / "demo_terrain.yaml")
+    config = NonrigidIcpConfig.load_yaml(config_dir / "demo_terrain.yaml")
 
     graph = Graph()
     expand_ratio = 1.1
@@ -392,7 +392,7 @@ def main():
     )
     src_pcd = torch.from_numpy(np.asarray(src_mesh.vertices)).float()
     tgt_pcd = torch.from_numpy(np.asarray(tgt_mesh.vertices)).float()
-    nricp = NonRigidICP(
+    nricp = NonRigidIcp(
         src_pcd,
         tgt_pcd,
         graph,

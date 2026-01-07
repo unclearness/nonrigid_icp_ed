@@ -13,8 +13,8 @@ from nonrigid_icp_ed.io import (
     export_graph_as_mesh,
 )
 from nonrigid_icp_ed.util import set_random_seed
-from nonrigid_icp_ed.registration import NonRigidICP
-from nonrigid_icp_ed.config import NonrigidIcpEdConfig
+from nonrigid_icp_ed.registration import NonRigidIcp
+from nonrigid_icp_ed.config import NonrigidIcpConfig
 from nonrigid_icp_ed.obj_io import load_obj_as_open3d
 
 
@@ -40,7 +40,7 @@ def main():
     tgt_points = np.asarray(tgt_sampled_pcd.points)
 
     config_dir = Path(__file__).parent.parent / "config"
-    config = NonrigidIcpEdConfig.load_yaml(
+    config = NonrigidIcpConfig.load_yaml(
         config_dir / "demo_watertight.yaml"
     )
     node_num = 1500
@@ -74,7 +74,7 @@ def main():
         sigma=config.graph_conf.sigma,
         eps=config.graph_conf.eps,
     )
-    nricp = NonRigidICP(
+    nricp = NonRigidIcp(
         src_pcd,
         tgt_pcd,
         graph,
