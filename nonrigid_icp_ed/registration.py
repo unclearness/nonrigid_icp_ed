@@ -572,17 +572,27 @@ class NonRigidIcp:
         src_pcd: torch.Tensor,
         graph_nodes: torch.Tensor,
         num_nodes_per_point: int,
+        graph: Graph,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         src_node_indices, src_node_dists = find_nearest_neighbors_open3d(
             src_pcd, graph_nodes, num_nodes_per_point
         )
-        # Convert distances to weights using Gaussian kernel
-        sigma = torch.mean(torch.sqrt(src_node_dists))
-        src_node_weights = torch.exp(-src_node_dists / (2 * sigma * sigma))
-        # Normalize weights
-        src_node_weights = src_node_weights / (
-            torch.sum(src_node_weights, dim=1, keepdim=True) + 1e-8
-        )
+        if graph is None:
+            loguru.logger.warning(
+                "Previous graph not provided, computing node weights using Gaussian kernel..."
+            )
+            # Convert distances to weights using Gaussian kernel
+            sigma = torch.mean(torch.sqrt(src_node_dists))
+            src_node_weights = torch.exp(-src_node_dists / (2 * sigma * sigma))
+            # Normalize weights
+            src_node_weights = src_node_weights / (
+                torch.sum(src_node_weights, dim=1, keepdim=True) + 1e-8
+            )
+        else:
+            src_node_weights = graph.compute_weights_for_points(
+                src_node_dists, graph.weight_type, graph.eps_point_weight, graph.sigma
+            )
+
         return src_node_indices, src_node_weights
 
     @staticmethod
@@ -608,6 +618,7 @@ class NonRigidIcp:
                         warped_src_pcd,
                         last_history.graph.poss,
                         last_history.src_node_indices.shape[1],
+                        last_history.graph,
                     )
                 )
             warped_src_pcd = warp_embedded_deformation(
@@ -634,6 +645,7 @@ class NonRigidIcp:
                             warped_src_pcd,
                             history.graph.poss,
                             history.src_node_indices.shape[1],
+                            history.graph,
                         )
                     )
                 warped_src_pcd = warp_embedded_deformation(

@@ -91,6 +91,9 @@ class Graph:
     weights: torch.Tensor = field(
         default_factory=lambda: torch.empty((0,), dtype=torch.float32)
     )  # (E,)
+    weight_type: Literal["inv", "gaussian"] = "inv"
+    sigma: float | None = None
+    eps_point_weight: float = 1e-12
 
     def __post_init__(self):
         assert self.poss.ndim == 2 and self.poss.shape[1] == 3, "poss must be (N,3)"
@@ -109,6 +112,9 @@ class Graph:
             "ts": self.ts,
             "edges": self.edges,
             "weights": self.weights,
+            "weight_type": self.weight_type,
+            "sigma": self.sigma,
+            "eps_point_weight": self.eps_point_weight,
         }
 
     @staticmethod
@@ -119,6 +125,9 @@ class Graph:
             ts=d["ts"],
             edges=d["edges"],
             weights=d["weights"],
+            weight_type=d.get("weight_type", "inv"),
+            sigma=d.get("sigma", None),
+            eps_point_weight=d.get("eps_point_weight", 1e-12),
         )
 
     def to(self, device: torch.device) -> "Graph":
@@ -129,6 +138,25 @@ class Graph:
             edges=self.edges.to(device),
             weights=self.weights.to(device),
         )
+
+    @staticmethod
+    def compute_weights_for_points(
+        dists: torch.Tensor,  # (P,K),
+        weight_type: Literal["inv", "gaussian"],
+        eps: float,
+        sigma: float,
+    ) -> torch.Tensor:
+        if weight_type == "inv":
+            w = 1.0 / (dists.clamp_min(0.0) + eps)  # (N, K)
+        elif weight_type == "gaussian":
+            if sigma is None:
+                # heuristic sigma: median distance over all edges
+                sigma = dists.median().item() + eps
+            w = torch.exp(-(dists**2) / (2.0 * (sigma**2)))
+        else:
+            raise ValueError("weight_type must be 'inv' or 'gaussian'")
+        w = w / w.sum(dim=1, keepdim=True)  # row-normalize
+        return w
 
     def init_as_grid(
         self,
@@ -272,7 +300,7 @@ class Graph:
             raise ValueError("weight_type must be 'inv' or 'gaussian'")
 
         # Row-normalize: sum of outgoing weights per node i is 1
-        w = w / (w.sum(dim=1, keepdim=True) + 1e-12)  # (N, K)
+        w = w / (w.sum(dim=1, keepdim=True) + eps)  # (N, K)
 
         # Build directed edge list: (i -> j) for all neighbors
         i_idx = (
@@ -320,14 +348,14 @@ class Graph:
             knn_func = find_nearest_neighbors_open3d
 
         idx, dist = knn_func(points, self.poss, K)  # (P, K)
-        if weight_type == "inv":
-            w = 1.0 / (dist.clamp_min(0.0) + eps)  # (P, K)
-        elif weight_type == "gaussian":
-            if sigma is None:
-                sigma = dist.median().item() + eps
-            w = torch.exp(-(dist**2) / (2.0 * (sigma**2)))
-        else:
-            raise ValueError("weight_type must be 'inv' or 'gaussian'")
 
-        w = w / w.sum(dim=1, keepdim=True)  # row-normalize
+        w = Graph.compute_weights_for_points(
+            dists=dist,
+            weight_type=weight_type,
+            eps=eps,
+            sigma=sigma,
+        )  # (P, K)
+
+        self.eps_point_weight = eps
+
         return idx.to(dtype=torch.long), w.to(dtype=points.dtype)
