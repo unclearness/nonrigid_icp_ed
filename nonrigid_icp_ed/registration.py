@@ -573,7 +573,7 @@ class NonRigidIcp:
         graph_nodes: torch.Tensor,
         num_nodes_per_point: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        src_node_indices, src_node_dists = find_nearest_neighbors_faiss(
+        src_node_indices, src_node_dists = find_nearest_neighbors_open3d(
             src_pcd, graph_nodes, num_nodes_per_point
         )
         # Convert distances to weights using Gaussian kernel
