@@ -172,6 +172,26 @@ def compute_truncated_chamfer_distance(
         ignore_index,
     )
 
+    if False:
+        src_weight = torch.ones((src_points.shape[0],), device=src_points.device)
+        src_min_x = torch.min(src_points, dim=0).values[0]
+        src_max_x = torch.max(src_points, dim=0).values[0]
+        src_max_y = torch.max(src_points, dim=0).values[1]
+        src_max_z = torch.max(src_points, dim=0).values[2]
+        dist_th = torch.sqrt((src_max_x - src_min_x) ** 2)
+
+        src_min_z = torch.min(src_points, dim=0).values[2]
+
+        src_min_dist = torch.sqrt((src_points[..., 0] - src_min_x) ** 2)
+        src_max_dist = torch.sqrt((src_points[..., 0] - src_max_x) ** 2)
+
+        # src_weight[(src_min_dist < dist_th) | (src_max_dist < dist_th)] = 10.0
+        # h = (src_max_z - src_min_z) * 0.3 + src_min_z
+        # src_weight[(src_max_dist < dist_th) & (src_points[..., 2] > h)] = 10.0
+        src_weight[(src_max_dist < dist_th)] = 10.0
+
+        # min_d_s2t = min_d_s2t * src_weight
+
     # --- reduction (Open3D: mean per direction, sum of both) ---
     if reduction == "mean":
         loss_s = torch.nanmean(

@@ -358,6 +358,9 @@ def main():
     tgt_mesh = prepate_target_terrain_mesh(
         size_x, size_z, output_dir, raidus_node, raidus_edge, src_mesh, deg=15
     )
+    
+    config_dir = Path(__file__).parent.parent / "config"
+    config = NonrigidIcpEdConfig.load_yaml(config_dir / "demo_terrain.yaml")
 
     graph = Graph()
     expand_ratio = 1.1
@@ -382,11 +385,11 @@ def main():
     )
     indices_v, weights_v = graph.assign_nodes_to_points_by_knn(
         torch.from_numpy(np.asarray(src_mesh.vertices)).float().to(graph.poss.device),
-        K=len(graph.poss),
-        weight_type="inv",
+        K =config.graph_conf.num_nodes_per_point,
+        weight_type=config.graph_conf.weight_type,
+        sigma=config.graph_conf.sigma,
+        eps=config.graph_conf.eps,
     )
-    config_dir = Path(__file__).parent.parent / "config"
-    config = NonrigidIcpEdConfig.load_yaml(config_dir / "demo_terrain.yaml")
     src_pcd = torch.from_numpy(np.asarray(src_mesh.vertices)).float()
     tgt_pcd = torch.from_numpy(np.asarray(tgt_mesh.vertices)).float()
     nricp = NonRigidICP(

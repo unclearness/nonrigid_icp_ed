@@ -98,6 +98,7 @@ def optimize_embeded_deformation_with_correspondences(
     fix_anchors: bool = False,
     src_triangles: torch.Tensor | None = None,
     report_interval: int = 10,
+    weight_mask: torch.Tensor | None = None,
 ):
 
     assert (
@@ -428,6 +429,9 @@ class NonRigidICP:
                 f"Non-Rigid ICP Iteration {i+1}/{self.config.num_iterations}"
             )
 
+            # print(self.graph.ts[0:5])
+            # print(self.graph.Rs[0:5])
+
             loguru.logger.info("Finding nearest neighbor correspondences...")
             src2tgt_indices, src2tgt_dists = find_nearest_neighbors_faiss(
                 self.warped_src_pcd, self.tgt_pcd, self.config.correspondence_conf.k
@@ -435,6 +439,70 @@ class NonRigidICP:
             tgt2src_indices, tgt2src_dists = find_nearest_neighbors_faiss(
                 self.tgt_pcd, self.warped_src_pcd, self.config.correspondence_conf.k
             )
+
+            # if self.src_normals is not None and self.tgt_normals is not None:
+            #     loguru.logger.info("Filtering correspondences by normal consistency...")
+            #     #print(src2tgt_indices.shape, self.tgt_normals.shape)
+            #     src2tgt_normals = self.tgt_normals[src2tgt_indices.squeeze(-1)]
+            #     #print("src2tgt_normals:", src2tgt_normals.shape)
+            #     src_normals_expanded = self.warped_src_normals
+            #     cos_angles = torch.sum(src_normals_expanded * src2tgt_normals, dim=-1)
+            #     valid_mask_s2t = torch.abs(cos_angles) > math.cos(math.radians(60.0))  # 60 degrees threshold
+            #     #print(valid_mask.shape)
+            #     src2tgt_indices[~valid_mask_s2t] = -1
+            #     print(src2tgt_indices.shape[0], (src2tgt_indices == -1).sum().item())
+            #     #print(src2tgt_indices)
+            #     #print(src2tgt_indices.shape)
+            #     #hoge
+
+            #     tgt2src_normals = self.warped_src_normals[tgt2src_indices.squeeze(-1)]
+            #     tgt_normals_expanded = self.tgt_normals
+            #     cos_angles_t2s = torch.sum(tgt_normals_expanded * tgt2src_normals, dim=-1)
+            #     valid_mask_t2s = torch.abs(cos_angles_t2s) > math.cos(math.radians(60.0))  # 60 degrees threshold
+            #     tgt2src_indices[~valid_mask_t2s] = -1
+
+            #     from nonrigid_icp_ed.io import export_correspondences_as_lines
+            #     output_dir = Path("./")
+            #     output_dir.mkdir(parents=True, exist_ok=True)
+
+            #     export_correspondences_as_lines(
+            #         self.warped_src_pcd[valid_mask_s2t],
+            #         self.tgt_pcd[src2tgt_indices.squeeze(-1)[valid_mask_s2t]],
+            #         output_dir / f"correspondences_s2t_iter_{i+1:03d}.obj",
+            #     )
+
+            #     export_correspondences_as_lines(
+            #         self.tgt_pcd[valid_mask_t2s],
+            #         self.warped_src_pcd[tgt2src_indices.squeeze(-1)[valid_mask_t2s]],
+            #         output_dir / f"correspondences_t2s_iter_{i+1:03d}.obj",
+            #     )
+            if False:
+                from nonrigid_icp_ed.io import export_correspondences_as_lines
+
+                output_dir = Path("./")
+                output_dir.mkdir(parents=True, exist_ok=True)
+
+                src2tgt_indices[
+                    src2tgt_dists.squeeze(-1) > self.config.minimization_conf.trunc_th
+                ] = -1
+                tgt2src_indices[
+                    tgt2src_dists.squeeze(-1) > self.config.minimization_conf.trunc_th
+                ] = -1
+
+                valid_mask_s2t = src2tgt_indices.squeeze(-1) != -1
+                valid_mask_t2s = tgt2src_indices.squeeze(-1) != -1
+
+                export_correspondences_as_lines(
+                    self.warped_src_pcd[valid_mask_s2t],
+                    self.tgt_pcd[src2tgt_indices.squeeze(-1)[valid_mask_s2t]],
+                    output_dir / f"correspondences_s2t_iter_{i+1:03d}.obj",
+                )
+
+                export_correspondences_as_lines(
+                    self.tgt_pcd[valid_mask_t2s],
+                    self.warped_src_pcd[tgt2src_indices.squeeze(-1)[valid_mask_t2s]],
+                    output_dir / f"correspondences_t2s_iter_{i+1:03d}.obj",
+                )
 
             loguru.logger.info("Optimizing embedded deformation...")
             if self.config.global_deform:
