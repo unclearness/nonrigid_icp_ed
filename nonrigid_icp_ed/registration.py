@@ -100,6 +100,7 @@ def optimize_embeded_deformation_with_correspondences(
     fix_anchors: bool = False,
     src_triangles: torch.Tensor | None = None,
     report_interval: int = 10,
+    callback_before_optimization_iteration: Callable | None = None,
 ):
 
     assert (
@@ -176,6 +177,17 @@ def optimize_embeded_deformation_with_correspondences(
 
     warped_src_pcd = src_pcd
     for i in range(max_iters):
+        if callback_before_optimization_iteration is not None:
+            callback_before_optimization_iteration(
+                i,
+                warped_src_pcd,
+                anchor_poss,
+                anchor_Rs,
+                anchor_ts,
+                anchor_rot6_vecs,
+                optimizer_Rs,
+                optimizer_ts,
+            )
 
         if not fix_anchors:
             # if not fix_anchors: Update anchor positions per iteration
@@ -370,6 +382,7 @@ class NonRigidIcp:
             ]
             | None
         ) = None,
+        callback_before_optimization_iteration: Callable | None = None,
     ):
         self.initialize(
             src_pcd,
@@ -384,6 +397,7 @@ class NonRigidIcp:
             src_normals,
             tgt_normals,
             callback_after_correspondence_search,
+            callback_before_optimization_iteration,
         )
 
     def initialize(
@@ -413,6 +427,7 @@ class NonRigidIcp:
             ]
             | None
         ) = None,
+        callback_before_optimization_iteration: Callable | None = None,
     ):
         self.src_pcd = src_pcd
         self.tgt_pcd = tgt_pcd
@@ -426,7 +441,9 @@ class NonRigidIcp:
         self.src_normals = src_normals
         self.tgt_normals = tgt_normals
         self.callback_after_correspondence_search = callback_after_correspondence_search
-
+        self.callback_before_optimization_iteration = (
+            callback_before_optimization_iteration
+        )
         self.optimization_histories = []
 
     def to(self, device: torch.device):
@@ -536,6 +553,7 @@ class NonRigidIcp:
                 fix_anchors=self.config.minimization_conf.fix_anchors,
                 src_triangles=self.src_triangles,
                 report_interval=self.config.minimization_conf.report_interval,
+                callback_before_optimization_iteration=self.callback_before_optimization_iteration,
             )
 
             self.warped_src_pcd = warped_src_pcd.detach().clone()
