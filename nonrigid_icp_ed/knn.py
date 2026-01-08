@@ -1,11 +1,17 @@
 import numpy as np
 import torch
-import faiss
+try:
+    import faiss
+    faiss_imported = True
+except ImportError:
+    faiss_imported = False
 import open3d as o3d
 
 def find_nearest_neighbors_faiss(
     src: torch.Tensor, tgt: torch.Tensor, k: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    if not faiss_imported:
+        raise ImportError("faiss is not installed. Please install faiss to use this function.")
     # Use the FAISS 1.13.x-safe code we wrote earlier, but return distances too.
     S, T = src.shape[0], tgt.shape[0]
     if S == 0 or T == 0:
